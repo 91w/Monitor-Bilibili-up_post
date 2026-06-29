@@ -18,7 +18,7 @@
 ```text
 bilibili_feishu_watcher.py     主脚本
 config.example.json            配置模板
-config.json                    本地配置，需自行创建，不建议提交到 GitHub
+config.json                    本地配置，需自行创建
 state.json                     运行后自动生成，记录每个 UP 的最新动态 ID
 install_scheduled_tasks.ps1    Windows 定时启动/停止任务安装脚本
 uninstall_scheduled_tasks.ps1  Windows 定时任务卸载脚本
@@ -32,21 +32,11 @@ requirements.txt               Python 依赖
 3. 如果开启了“关键词”安全设置，把关键词填入 `feishu_keyword`。
 4. 如果开启了“签名校验”，把签名密钥填入 `feishu_secret`。
 
-如果机器人开启了关键词校验，但消息里没有包含关键词，飞书会返回：
-
-```text
-Key Words Not Found
-```
-
-这时请确认 `config.json` 里的 `feishu_keyword` 和飞书后台配置完全一致。
-
 ## 安装依赖
 
 ```powershell
 python -m pip install -r .\requirements.txt
 ```
-
-如果没有使用 `requirements.txt`，也可以直接安装：
 
 ```powershell
 python -m pip install requests
@@ -115,17 +105,6 @@ python .\bilibili_feishu_watcher.py --config .\config.json --once --log-level DE
 ```json
 "notify_on_first_run": false
 ```
-
-### 测试去重
-
-连续运行两次：
-
-```powershell
-python .\bilibili_feishu_watcher.py --config .\config.json --once
-python .\bilibili_feishu_watcher.py --config .\config.json --once
-```
-
-第二次不会重复发送同一条动态，因为 `state.json` 已记录最新动态 ID。
 
 ## 运行方式
 
@@ -197,14 +176,6 @@ Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStop"
 "feishu_keyword": "你的关键词"
 ```
 
-### 图文动态只显示“发布图片动态”
-
-脚本已针对 B 站新版动态接口增加 `features=itemOpusStyle` 参数，并会优先提取富文本正文。如果仍遇到问题，可以使用 `--log-level DEBUG` 运行并检查是否生成 `debug_dynamic_*.json`，该文件可用于定位 B 站返回结构。
-
-### B 站接口 SSL 或超时错误
-
-脚本会自动重试，并在带 Cookie 失败后尝试不带 Cookie 请求。若仍失败，通常是当前网络、代理或 B 站风控导致。可以稍后重试，或更新 `bilibili_cookie`。
-
 ### 收不到新动态
 
 请检查：
@@ -214,14 +185,4 @@ Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStop"
 - 飞书机器人 Webhook 和安全设置是否正确
 - `bilibili_cookie` 是否过期
 
-## 安全提醒
 
-不要把下面这些内容提交到公开 GitHub 仓库：
-
-- `config.json`
-- `state.json`
-- B 站 Cookie
-- 飞书 Webhook
-- 飞书签名密钥
-
-建议发布前添加 `.gitignore`，忽略本地配置和运行状态文件。
