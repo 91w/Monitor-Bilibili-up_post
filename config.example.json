@@ -1,0 +1,14 @@
+{
+  "interval_seconds": 300,
+  "notify_on_first_run": false,
+  "bilibili_cookie": "",
+  "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "feishu_secret": "",
+  "feishu_keyword": "",
+  "up_users": [
+    {
+      "uid": "2",
+      "name": "示例UP主"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+
+config.json
+state.json
+debug_dynamic_*.json
+
+.env
+.venv/
+venv/
