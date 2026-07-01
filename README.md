@@ -79,49 +79,6 @@ Copy-Item .\config.example.json .\config.json
 - `feishu_keyword`：飞书机器人关键词校验词；未开启关键词校验则留空。
 - `up_users`：要监听的 UP 主列表。`uid` 是空间地址里的数字，例如 `https://space.bilibili.com/123456` 的 UID 是 `123456`。
 
-## 测试
-
-### 只抓取，不发送飞书
-
-```powershell
-python .\bilibili_feishu_watcher.py --config .\config.json --once --dry-run --log-level DEBUG
-```
-
-日志里出现 `[dry-run] Would send:` 时，后面的内容就是将要发送到飞书的卡片内容。
-
-### 测试飞书是否能收到消息
-
-临时把 `config.json` 里的 `notify_on_first_run` 改成 `true`，删除状态文件后运行：
-
-```powershell
-Remove-Item .\state.json -ErrorAction SilentlyContinue
-python .\bilibili_feishu_watcher.py --config .\config.json --once --log-level DEBUG
-```
-
-预期结果：飞书群收到一条当前最新动态的卡片消息。
-
-测试完成后建议改回：
-
-```json
-"notify_on_first_run": false
-```
-
-## 运行方式
-
-### 单次检查
-
-```powershell
-python .\bilibili_feishu_watcher.py --config .\config.json --once
-```
-
-### 长期运行
-
-```powershell
-python .\bilibili_feishu_watcher.py --config .\config.json --log-level INFO
-```
-
-脚本会按照 `interval_seconds` 周期持续检查。
-
 ## Windows 定时启动和停止
 
 仓库提供了一键安装任务计划的脚本。默认每天 `08:00` 启动，`23:30` 停止。
@@ -140,14 +97,6 @@ python .\bilibili_feishu_watcher.py --config .\config.json --log-level INFO
 
 ```powershell
 Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStart"
-```
-
-查看脚本是否正在运行：
-
-```powershell
-Get-CimInstance Win32_Process |
-Where-Object { $_.CommandLine -like '*bilibili_feishu_watcher.py*' } |
-Select-Object ProcessId, CommandLine
 ```
 
 手动测试停止任务：
