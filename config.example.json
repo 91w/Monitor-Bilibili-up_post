@@ -1,6 +1,8 @@
 {
   "interval_seconds": 300,
   "notify_on_first_run": false,
+  "prefer_bilibili_cookie": true,
+  "strip_bilibili_read_state_cookies": true,
   "bilibili_cookie": "",
   "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "feishu_secret": "",
