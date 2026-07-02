@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -136,12 +137,14 @@ def remember_seen(state: dict[str, Any], uid: str, dynamic_ids: list[str]) -> No
 def single_instance_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = lock_path.open("a+", encoding="utf-8")
+    locked = False
     try:
         if os.name == "nt":
             import msvcrt
 
             try:
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
             except OSError as exc:
                 raise WatcherError(
                     f"Another watcher instance is already running; lock file is busy: {lock_path}"
@@ -151,6 +154,7 @@ def single_instance_lock(lock_path: Path):
 
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
             except OSError as exc:
                 raise WatcherError(
                     f"Another watcher instance is already running; lock file is busy: {lock_path}"
@@ -163,6 +167,8 @@ def single_instance_lock(lock_path: Path):
         yield
     finally:
         try:
+            if not locked:
+                return
             if os.name == "nt":
                 lock_file.seek(0)
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
@@ -529,8 +535,12 @@ def extract_dynamic(dynamic: dict[str, Any], fallback_uid: str, fallback_name: s
 
     text_is_fallback = False
     if not text:
-        text_is_fallback = True
-        text = summarize_major(major, major_type)
+        restricted_text = summarize_restricted_dynamic(dynamic, major)
+        if restricted_text:
+            text = restricted_text
+        else:
+            text_is_fallback = True
+            text = summarize_major(major, major_type)
 
     return {
         "id": dynamic_id,
@@ -542,6 +552,54 @@ def extract_dynamic(dynamic: dict[str, Any], fallback_uid: str, fallback_name: s
         "_text_is_fallback": "1" if text_is_fallback else "0",
         "url": url,
     }
+
+
+def dynamic_id_int(dynamic: dict[str, Any]) -> int:
+    dynamic_id = str(dynamic.get("id_str") or dynamic.get("id") or "")
+    return int(dynamic_id) if dynamic_id.isdigit() else 0
+
+
+def is_pinned_dynamic(dynamic: dict[str, Any]) -> bool:
+    modules = dynamic.get("modules", {})
+    tag: Any = None
+    if isinstance(modules, dict):
+        tag = modules.get("module_tag")
+    elif isinstance(modules, list):
+        for module in modules:
+            if isinstance(module, dict) and module.get("module_tag"):
+                tag = module.get("module_tag")
+                break
+
+    if not isinstance(tag, dict):
+        return False
+
+    return str(tag.get("text") or "").strip().lower() in {"置顶", "pinned", "top"}
+
+
+def sorted_feed_dynamics(dynamics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [dynamic for dynamic in dynamics if dynamic_id_int(dynamic) > 0],
+        key=dynamic_id_int,
+    )
+
+
+def summarize_restricted_dynamic(dynamic: dict[str, Any], major: dict[str, Any]) -> str:
+    basic = dynamic.get("basic") if isinstance(dynamic.get("basic"), dict) else {}
+    blocked = major.get("blocked") if isinstance(major.get("blocked"), dict) else {}
+    if not blocked and not basic.get("is_only_fans"):
+        return ""
+
+    parts = ["充电专属动态（当前 Cookie 未解锁正文）"]
+    hint = str(blocked.get("hint_message") or "").strip()
+    if hint:
+        parts.append(hint)
+
+    button = blocked.get("button") if isinstance(blocked.get("button"), dict) else {}
+    button_text = str(button.get("text") or "").strip()
+    if button_text:
+        parts.append(f"解锁方式：{button_text}")
+
+    return "\n".join(parts)
 
 
 def fill_dynamic_detail_text(
@@ -936,15 +994,11 @@ def summarize_major(major: dict[str, Any], major_type: str) -> str:
 
 
 def format_message(item: dict[str, str], keyword: str | None = None) -> tuple[str, str]:
-    title = f"{item['author']} 发布了新动态"
-    access_line = ""
-    if item.get("access_hint"):
-        access_line = f"**权限提示：** {escape_markdown(item['access_hint'])}\n"
+    is_restricted = "充电专属动态" in item.get("text", "") or "is_only_fans" in item.get("access_hint", "")
+    title = f"{item['author']} 发布了{'充电专属动态' if is_restricted else '新动态'}"
     body = (
         f"{escape_markdown(item['text'][:1200])}\n\n"
         f"**UP主：** {escape_markdown(item['author'])}\n"
-        f"**类型：** {escape_markdown(item['type'])}\n"
-        f"{access_line}"
         f"**时间：** {escape_markdown(item['pub_time'] or '未知')}\n\n"
         f"[打开动态]({item['url']})"
     )
@@ -973,8 +1027,10 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
         raise WatcherError("Config field feishu_webhook is required unless --dry-run is used")
 
     state = normalize_state(load_json(state_path) if state_path.exists() else {"last_dynamic_ids": {}})
+    if dry_run:
+        state = copy.deepcopy(state)
     last_ids = state.setdefault("last_dynamic_ids", {})
-    seen_ids = state.setdefault("seen_dynamic_ids", {})
+    state.setdefault("seen_dynamic_ids", {})
     sent_count = 0
 
     for user in users:
@@ -988,16 +1044,20 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
             logging.info("No dynamic found for uid=%s", user.uid)
             continue
 
+        feed_dynamics = sorted_feed_dynamics(dynamics)
+        if not feed_dynamics:
+            logging.info("No valid dynamic id found for uid=%s", user.uid)
+            continue
         old_id = str(last_ids.get(user.uid, ""))
-        user_seen_ids = {str(dynamic_id) for dynamic_id in seen_ids.get(user.uid, [])}
-        latest_item = extract_dynamic(dynamics[0], user.uid, user.name)
-        latest_item = fill_dynamic_detail_text(latest_item, user.uid, user.name, cookie, dynamics[0])
+        latest_dynamic = feed_dynamics[-1]
+        latest_item = extract_dynamic(latest_dynamic, user.uid, user.name)
+        latest_item = fill_dynamic_detail_text(latest_item, user.uid, user.name, cookie, latest_dynamic)
         if not latest_item["id"]:
             logging.warning("Skip uid=%s because latest dynamic has no id", user.uid)
             continue
 
         fetched_ids: list[str] = []
-        for dynamic in dynamics:
+        for dynamic in feed_dynamics:
             fetched_item = extract_dynamic(dynamic, user.uid, user.name)
             if fetched_item["id"]:
                 fetched_ids.append(fetched_item["id"])
@@ -1006,6 +1066,8 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
         if old_id == latest_item["id"]:
             logging.info("No new dynamic for %s, latest=%s", latest_item["author"], latest_item["id"])
             remember_seen(state, user.uid, fetched_ids)
+            if dry_run:
+                logging.info("[dry-run] State not saved")
             continue
 
         if is_first_seen and not notify_on_first_run:
@@ -1016,34 +1078,49 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
                 latest_item["author"],
                 latest_item["id"],
             )
+            if dry_run:
+                logging.info("[dry-run] State not saved")
             continue
 
         if is_first_seen:
             pending = [latest_item]
         else:
             pending: list[dict[str, str]] = []
-            found_old_id = False
-            for dynamic in dynamics:
-                item = extract_dynamic(dynamic, user.uid, user.name)
-                item = fill_dynamic_detail_text(item, user.uid, user.name, cookie, dynamic)
-                if not item["id"]:
-                    continue
-                if item["id"] == old_id:
-                    found_old_id = True
-                    break
-                if item["id"] in user_seen_ids:
-                    continue
-                pending.append(item)
-            if not found_old_id:
+            old_id_int = int(old_id) if old_id.isdigit() else 0
+            old_dynamic = next(
+                (
+                    dynamic
+                    for dynamic in dynamics
+                    if str(dynamic.get("id_str") or dynamic.get("id") or "") == old_id
+                ),
+                None,
+            )
+            if old_dynamic and is_pinned_dynamic(old_dynamic):
                 logging.warning(
-                    "Previous dynamic %s for uid=%s was not found in the current feed; "
-                    "only the latest unseen dynamic will be sent to avoid replaying old items.",
+                    "Previous dynamic %s for uid=%s is pinned; sending only the latest non-baseline dynamic.",
                     old_id,
                     user.uid,
                 )
-                pending = [] if latest_item["id"] in user_seen_ids else [latest_item]
+                pending = [latest_item]
+            else:
+                for dynamic in feed_dynamics:
+                    item = extract_dynamic(dynamic, user.uid, user.name)
+                    item = fill_dynamic_detail_text(item, user.uid, user.name, cookie, dynamic)
+                    if not item["id"]:
+                        continue
+                    item_id_int = int(item["id"]) if item["id"].isdigit() else 0
+                    if item_id_int <= old_id_int:
+                        continue
+                    pending.append(item)
+                if pending and old_id not in fetched_ids:
+                    logging.warning(
+                        "Previous dynamic %s for uid=%s was not found in the current feed; "
+                        "sending dynamics newer than that id from the current feed.",
+                        old_id,
+                        user.uid,
+                    )
 
-        for item in reversed(pending):
+        for item in pending:
             title, body = format_message(item, keyword)
             if dry_run:
                 logging.info("[dry-run] Would send: %s\n%s", title, body)
@@ -1058,7 +1135,10 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
         last_ids[user.uid] = latest_item["id"]
         remember_seen(state, user.uid, fetched_ids)
 
-    save_json(state_path, state)
+    if dry_run:
+        logging.info("[dry-run] Final state not saved")
+    else:
+        save_json(state_path, state)
     return sent_count
 
 
