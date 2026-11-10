@@ -1,0 +1,12 @@
+#!/bin/sh
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+exec 9>/var/run/b-up-clock.lock
+flock -n 9 || exit 0
+if [ "$(date -u +%Y)" -lt 2026 ] && [ -s /overlay/b-up-runtime/last-good-time ]; then
+    date -u -s "$(cat /overlay/b-up-runtime/last-good-time)" >/dev/null
+fi
+while ! wpa_cli -i wlan0 status 2>/dev/null | grep -q '^ip_address='; do sleep 5 9>&-; done
+# init restarts this process if NTP exits; no server mode is enabled.
+exec /usr/sbin/ntpd -n -S /usr/sbin/b-up-ntp-hook -p ntp.aliyun.com -p ntp.tencent.com -p time.cloudflare.com 9>&- >/dev/null 2>&1

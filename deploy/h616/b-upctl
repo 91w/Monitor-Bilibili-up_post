@@ -1,0 +1,42 @@
+#!/bin/sh
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+BASE=/overlay/b-up
+PID=/var/run/b-up-watcher.pid
+stop_child() {
+    if [ -s "$PID" ]; then
+        p=$(cat "$PID")
+        case "$p" in ''|*[!0-9]*) return ;; esac
+        if [ -r "/proc/$p/cmdline" ] && tr '\000' ' ' <"/proc/$p/cmdline" | grep -q '/overlay/b-up/app/runner.py'; then
+            kill "$p" 2>/dev/null
+        fi
+    fi
+}
+case "${1:-status}" in
+    start|dry-run)
+        mode=live
+        [ "$1" != dry-run ] || mode=dry-run
+        stop_child
+        printf '%s\n' "$mode" >"$BASE/data/run-mode"
+        touch "$BASE/data/enabled"
+        echo "Enabled mode=$mode; service starts when network and time are ready."
+        ;;
+    stop)
+        rm -f "$BASE/data/enabled"
+        stop_child
+        echo "Disabled startup; requested graceful stop."
+        ;;
+    status)
+        if [ -e "$BASE/data/enabled" ]; then printf 'enabled=yes mode='; cat "$BASE/data/run-mode"; else echo enabled=no; fi
+        if [ -s "$PID" ]; then
+            p=$(cat "$PID")
+            if kill -0 "$p" 2>/dev/null; then echo "watcher_pid=$p"; else echo watcher=not-running; fi
+        else echo watcher=not-running; fi
+        /overlay/b-up-runtime/python/bin/python3 "$BASE/app/timeguard.py"
+        date
+        wpa_cli -i wlan0 status | grep -E '^(wpa_state|ssid|ip_address)='
+        ;;
+    logs) tail -30 "$BASE/logs/watcher.log" ;;
+    *) echo "Usage: b-upctl {start|dry-run|stop|status|logs}"; exit 2 ;;
+esac

@@ -1,0 +1,40 @@
+#!/bin/sh
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+export TZ=CST-8
+umask 077
+BASE=/overlay/b-up
+PY=/overlay/b-up-runtime/python/bin/python3
+PID=/var/run/b-up-watcher.pid
+exec 9>/var/run/b-up-service.lock
+flock -n 9 || exit 0
+child=
+cleanup() {
+    [ -z "$child" ] || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
+    rm -f "$PID"
+}
+trap 'exit 0' TERM INT
+trap cleanup EXIT
+while :; do
+    if [ ! -e "$BASE/data/enabled" ]; then sleep 5 9>&-; continue; fi
+    if [ ! -s /var/run/b-up-time-ready ]; then sleep 5 9>&-; continue; fi
+    if ! "$PY" "$BASE/app/timeguard.py" >/dev/null 2>&1; then sleep 10 9>&-; continue; fi
+    if ! wpa_cli -i wlan0 status 2>/dev/null | grep -q '^ip_address='; then sleep 5 9>&-; continue; fi
+    mode=$(cat "$BASE/data/run-mode" 2>/dev/null)
+    set -- --config "$BASE/data/config.json" --state "$BASE/data/state.json"
+    case "$mode" in
+        live) ;;
+        dry-run) set -- "$@" --dry-run ;;
+        *) sleep 5 9>&-; continue ;;
+    esac
+    cd "$BASE/data" || exit 1
+    "$PY" "$BASE/app/runner.py" "$@" 9>&- >/dev/null 2>&1 &
+    child=$!
+    echo "$child" >"$PID"
+    wait "$child"
+    result=$?
+    child=
+    rm -f "$PID"
+    # Rate-limit restarts after configuration errors/crashes.
+    sleep 15 9>&-
+done

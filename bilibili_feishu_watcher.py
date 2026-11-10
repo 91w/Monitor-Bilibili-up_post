@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -35,6 +35,7 @@ import requests
 BILIBILI_DYNAMIC_URL = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
 BILIBILI_DYNAMIC_DETAIL_URL = "https://api.bilibili.com/x/polymer/web-dynamic/v1/detail"
 BILIBILI_LEGACY_DYNAMIC_DETAIL_URL = "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/get_dynamic_detail"
+BILIBILI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 BILIBILI_OPUS_URL = "https://www.bilibili.com/opus/{dynamic_id}"
 BILIBILI_INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__=(.*?);\(function\(\)", re.S)
 BILIBILI_DYNAMIC_FEATURES = (
@@ -68,7 +69,7 @@ class WatcherError(RuntimeError):
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as exc:
         raise WatcherError(f"Config file not found: {path}") from exc
     except json.JSONDecodeError as exc:
@@ -115,6 +116,10 @@ def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
     seen_ids = state.setdefault("seen_dynamic_ids", {})
     if not isinstance(seen_ids, dict):
         state["seen_dynamic_ids"] = {}
+
+    cookie_alerts = state.setdefault("cookie_alerts", {})
+    if not isinstance(cookie_alerts, dict):
+        state["cookie_alerts"] = {}
 
     return state
 
@@ -292,6 +297,205 @@ def post_to_feishu(webhook: str, title: str, text: str, secret: str | None = Non
                 "Set config field feishu_keyword to the keyword configured in the Feishu bot security settings."
             )
         raise WatcherError(f"Feishu webhook returned error: {result}")
+
+
+def parse_cookie_items(cookie: str | None) -> dict[str, str]:
+    items: dict[str, str] = {}
+    if not cookie:
+        return items
+
+    for part in cookie.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        items[name.strip()] = value.strip()
+    return items
+
+
+def parse_sessdata_expiry(cookie: str | None) -> int | None:
+    sessdata = parse_cookie_items(cookie).get("SESSDATA", "")
+    if not sessdata:
+        return None
+
+    decoded = unquote(sessdata)
+    now = int(time.time())
+    for match in re.findall(r"\b\d{10}\b", decoded):
+        timestamp = int(match)
+        if now - 3660 * 86400 <= timestamp <= now + 3660 * 86400:
+            return timestamp
+    return None
+
+
+def format_timestamp(timestamp: int) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+
+
+def maybe_send_alert(
+    state: dict[str, Any],
+    key: str,
+    title: str,
+    body: str,
+    webhook: str,
+    secret: str | None,
+    keyword: str | None,
+    interval_hours: int,
+    dry_run: bool,
+) -> bool:
+    alerts = state.setdefault("cookie_alerts", {})
+    if not isinstance(alerts, dict):
+        alerts = {}
+        state["cookie_alerts"] = alerts
+
+    now = int(time.time())
+    last_sent = int(alerts.get(key, 0) or 0)
+    interval_seconds = max(1, interval_hours) * 3600
+    if last_sent and now - last_sent < interval_seconds:
+        logging.info("Skip repeated alert %s; last sent at %s", key, format_timestamp(last_sent))
+        return False
+
+    if keyword:
+        title = f"{keyword} {title}"
+        body = f"{escape_markdown(keyword)}\n\n{body}"
+
+    if dry_run:
+        logging.info("[dry-run] Would send alert: %s\n%s", title, body)
+    else:
+        post_to_feishu(webhook, title, body, secret)
+        logging.warning("Sent alert: %s", title)
+
+    alerts[key] = now
+    return True
+
+
+def maybe_alert_cookie_expiry(
+    state: dict[str, Any],
+    cookie: str | None,
+    webhook: str,
+    secret: str | None,
+    keyword: str | None,
+    enabled: bool,
+    warn_days: int,
+    interval_hours: int,
+    dry_run: bool,
+) -> bool:
+    if not enabled or not cookie:
+        return False
+
+    expiry = parse_sessdata_expiry(cookie)
+    if not expiry:
+        return maybe_send_alert(
+            state,
+            "sessdata_expiry_unknown",
+            "B站 Cookie 过期时间无法识别",
+            "当前 `bilibili_cookie` 中未能识别出 `SESSDATA` 过期时间。\n\n"
+            "脚本仍会继续运行；如果后续充电动态只能读到占位内容，请重新从浏览器导入 Cookie。",
+            webhook,
+            secret,
+            keyword,
+            interval_hours,
+            dry_run,
+        )
+
+    seconds_left = expiry - int(time.time())
+    warn_seconds = max(0, warn_days) * 86400
+    if seconds_left > warn_seconds:
+        return False
+
+    if seconds_left <= 0:
+        title = "B站 Cookie 已过期"
+        status = "已过期"
+    else:
+        title = "B站 Cookie 即将过期"
+        days_left = max(0, seconds_left // 86400)
+        status = f"约 {days_left} 天后过期"
+
+    return maybe_send_alert(
+        state,
+        "sessdata_expiring",
+        title,
+        f"`SESSDATA` {status}。\n\n"
+        f"过期时间：{format_timestamp(expiry)}\n\n"
+        "过期后可能无法读取登录态动态，充电专属动态也可能只能看到占位提示。请及时更新 `config.json` 里的 `bilibili_cookie`。",
+        webhook,
+        secret,
+        keyword,
+        interval_hours,
+        dry_run,
+    )
+
+
+def request_bilibili_nav(cookie: str | None) -> dict[str, Any]:
+    response = requests.get(
+        BILIBILI_NAV_URL,
+        headers=bilibili_headers("0", cookie),
+        timeout=(8, 20),
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def maybe_alert_cookie_login(
+    state: dict[str, Any],
+    cookie: str | None,
+    webhook: str,
+    secret: str | None,
+    keyword: str | None,
+    enabled: bool,
+    interval_hours: int,
+    dry_run: bool,
+) -> bool:
+    if not enabled or not cookie:
+        return False
+
+    try:
+        payload = request_bilibili_nav(cookie)
+    except Exception as exc:
+        logging.warning("Failed to verify Bilibili Cookie login state: %s", exc)
+        return False
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    is_login = bool(data.get("isLogin"))
+    if payload.get("code") == 0 and is_login:
+        logging.debug(
+            "Bilibili Cookie login verified: mid=%s uname=%s",
+            data.get("mid"),
+            data.get("uname"),
+        )
+        return False
+
+    message = str(payload.get("message") or "未知错误")
+    return maybe_send_alert(
+        state,
+        "cookie_not_login",
+        "B站 Cookie 已失效或未登录",
+        f"B 站登录态检查失败：{escape_markdown(message)}。\n\n"
+        "当前 Cookie 可能已经被 B 站注销或风控失效，即使 `SESSDATA` 还没到期，也可能只能读取到充电专属占位。"
+        "\n\n请重新从已充电账号的浏览器复制 Cookie，并更新 `config.json`。",
+        webhook,
+        secret,
+        keyword,
+        interval_hours,
+        dry_run,
+    )
+
+
+def is_cookie_auth_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    markers = (
+        "-101",
+        "not login",
+        "not logged",
+        "unauthorized",
+        "forbidden",
+        "未登录",
+        "账号未登录",
+        "鉴权",
+        "权限",
+        "cookie",
+        "sessdata",
+    )
+    return any(marker in text for marker in markers)
 
 
 def bilibili_headers(uid: str, cookie: str | None) -> dict[str, str]:
@@ -589,7 +793,7 @@ def summarize_restricted_dynamic(dynamic: dict[str, Any], major: dict[str, Any])
     if not blocked and not basic.get("is_only_fans"):
         return ""
 
-    parts = ["充电专属动态（当前 Cookie 未解锁正文）"]
+    parts = ["充电专属动态（当前 Cookie 未登录或未解锁正文）"]
     hint = str(blocked.get("hint_message") or "").strip()
     if hint:
         parts.append(hint)
@@ -1022,6 +1226,9 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
     prefer_bilibili_cookie = bool(config.get("prefer_bilibili_cookie", False))
     strip_read_state_cookies = bool(config.get("strip_bilibili_read_state_cookies", True))
     notify_on_first_run = bool(config.get("notify_on_first_run", False))
+    cookie_alert_enabled = bool(config.get("cookie_alert_enabled", True))
+    cookie_expire_warn_days = int(config.get("cookie_expire_warn_days", 14))
+    cookie_alert_interval_hours = int(config.get("cookie_alert_interval_hours", 24))
 
     if not webhook and not dry_run:
         raise WatcherError("Config field feishu_webhook is required unless --dry-run is used")
@@ -1033,13 +1240,54 @@ def check_once(config: dict[str, Any], state_path: Path, dry_run: bool = False) 
     state.setdefault("seen_dynamic_ids", {})
     sent_count = 0
 
+    maybe_alert_cookie_expiry(
+        state,
+        cookie,
+        webhook,
+        secret,
+        keyword,
+        cookie_alert_enabled,
+        cookie_expire_warn_days,
+        cookie_alert_interval_hours,
+        dry_run,
+    )
+    maybe_alert_cookie_login(
+        state,
+        cookie,
+        webhook,
+        secret,
+        keyword,
+        cookie_alert_enabled,
+        cookie_alert_interval_hours,
+        dry_run,
+    )
+
     for user in users:
-        dynamics = request_dynamics(
-            user.uid,
-            cookie,
-            prefer_cookie=prefer_bilibili_cookie,
-            strip_read_state=strip_read_state_cookies,
-        )
+        try:
+            dynamics = request_dynamics(
+                user.uid,
+                cookie,
+                prefer_cookie=prefer_bilibili_cookie,
+                strip_read_state=strip_read_state_cookies,
+            )
+        except WatcherError as exc:
+            if cookie_alert_enabled and cookie and is_cookie_auth_error(exc):
+                maybe_send_alert(
+                    state,
+                    f"cookie_auth_error:{user.uid}",
+                    "B站 Cookie 可能已失效",
+                    f"检查 UP 主 `{user.name or user.uid}` 动态时，B 站接口返回登录态或权限相关错误。\n\n"
+                    f"错误信息：{escape_markdown(str(exc))}\n\n"
+                    "请重新从浏览器导入 `bilibili_cookie`，否则可能无法读取充电专属动态正文。",
+                    webhook,
+                    secret,
+                    keyword,
+                    cookie_alert_interval_hours,
+                    dry_run,
+                )
+            else:
+                logging.error("Failed to fetch dynamics for uid=%s: %s", user.uid, exc)
+            continue
         if not dynamics:
             logging.info("No dynamic found for uid=%s", user.uid)
             continue

@@ -1,0 +1,13 @@
+#!/bin/sh
+umask 077
+case "${stratum:-16}" in ''|*[!0-9]*) rm -f /var/run/b-up-time-ready; exit 0 ;; esac
+if [ "${stratum:-16}" -lt 1 ] || [ "${stratum:-16}" -ge 16 ] || [ "$(date -u +%Y)" -lt 2026 ]; then
+    rm -f /var/run/b-up-time-ready
+    exit 0
+fi
+# NTP may invoke hooks concurrently: use a PID-specific temporary file.
+date -u '+%Y-%m-%d %H:%M:%S' >/overlay/b-up-runtime/last-good-time.$$
+mv -f /overlay/b-up-runtime/last-good-time.$$ /overlay/b-up-runtime/last-good-time
+read boot_uptime unused </proc/uptime
+printf '{"epoch":%s,"uptime":%s,"stratum":%s}\n' "$(date -u +%s)" "$boot_uptime" "$stratum" >/var/run/b-up-time-ready.$$
+mv -f /var/run/b-up-time-ready.$$ /var/run/b-up-time-ready
