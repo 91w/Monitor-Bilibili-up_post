@@ -141,3 +141,9 @@ Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStop"
 已增加动态配图（沿用原Webhook，应用上传图片）、局域网状态页、每日运行摘要与Windows路由器查询/三天IP缓存入口。部署步骤、凭据配置、图片资源限制与失败降级策略见 [开发板说明](deploy/h616/README.md)。不要上传实际config、Cookie、App Secret、证书私钥或运行数据库。
 
 开发板适配入口与部署说明见 [deploy/h616](deploy/h616/README.md)：SQLite 持久化待发送队列、失败退避重试、历史分页补抓、NTP 发送保护，以及 USB / 局域网双向 TLS 配置更新。Windows 原入口保持原工作方式，使用 runner.py 才启用开发板队列。
+
+## H616 QQ 管理员消息转发备份
+
+QQ/NapCat 的源码、测试、存储维护与换板记录见 [QQ 转发部署目录](deploy/napcat-h616/README.md)。B站和QQ群是两个独立消息来源，当前部署共享可信时间和飞书图片上传代码。QQ 部分新增表情过滤、持久化连续发言合并，以及文字配图同条通知；75 项组件测试通过。
+
+公开副本仅含源码和脱敏说明，不含密码、Webhook、Token、登录态、聊天数据库或运行队列。示例群号及 Windows USB 工具路径需按实际环境配置。
