@@ -18,3 +18,21 @@ venv/
 pairing/
 config.previous.json
 config.upload.json
+
+# Private runtime credentials and paired certificate containers
+*.pfx
+*.p12
+config.before-images.json
+home-address-cache.json
+credentials-transfer.json
+image-credentials*.json
+image-test-sample.json
+
+# Private runtime credentials and paired certificate containers
+*.pfx
+*.p12
+config.before-images.json
+home-address-cache.json
+credentials-transfer.json
+image-credentials*.json
+image-test-sample.json

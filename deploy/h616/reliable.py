@@ -10,24 +10,45 @@ class Outbox:
         CREATE TABLE IF NOT EXISTS queue(uid TEXT, id TEXT, title TEXT, body TEXT,
         attempts INTEGER DEFAULT 0, due REAL DEFAULT 0, sent INTEGER DEFAULT 0,
         PRIMARY KEY(uid,id));''')
+        self.db.execute('CREATE TABLE IF NOT EXISTS events(at REAL, kind TEXT, uid TEXT)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS events_at ON events(at)')
+        columns={row[1] for row in self.db.execute('PRAGMA table_info(queue)')}
+        if 'images_json' not in columns:self.db.execute("ALTER TABLE queue ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]'")
+        if 'media_failures' not in columns:self.db.execute('ALTER TABLE queue ADD COLUMN media_failures INTEGER NOT NULL DEFAULT 0')
+        self.db.commit()
+
+    def event(self,kind,uid=''):
+        with self.db:
+            self.db.execute('INSERT INTO events VALUES(?,?,?)',(time.time(),kind,uid))
 
     def record(self, uid, cursor, messages):
         with self.db:
-            self.db.executemany('INSERT OR IGNORE INTO queue(uid,id,title,body) VALUES(?,?,?,?)', messages)
+            before=self.db.total_changes
+            rows=[]
+            for message in messages:
+                if len(message) not in (4,5):raise ValueError('Invalid message record')
+                rows.append(tuple(message[:4])+(json.dumps(message[4] if len(message)==5 else []),))
+            self.db.executemany('INSERT OR IGNORE INTO queue(uid,id,title,body,images_json) VALUES(?,?,?,?,?)', rows)
+            added=self.db.total_changes-before
+            self.db.executemany('INSERT INTO events VALUES(?,?,?)',[(time.time(),'queued',uid)]*added)
             self.db.execute('INSERT OR REPLACE INTO cursor VALUES(?,?)', (uid,cursor))
 
     def deliver(self, send, now):
-        rows = self.db.execute('SELECT uid,id,title,body,attempts FROM queue WHERE sent=0 AND due<=? ORDER BY rowid LIMIT 50',(now,)).fetchall()
-        for uid, ident, title, body, attempts in rows:
+        rows = self.db.execute('SELECT uid,id,title,body,attempts,images_json,media_failures FROM queue WHERE sent=0 AND due<=? ORDER BY rowid LIMIT 50',(now,)).fetchall()
+        for uid, ident, title, body, attempts, images_json, media_failures in rows:
             try:
-                send(title,body)
+                images=json.loads(images_json)
+                if images:send(title,body,images,media_failures>=3)
+                else:send(title,body)
             except Exception as exc:
                 with self.db:
-                    self.db.execute('UPDATE queue SET attempts=attempts+1,due=? WHERE uid=? AND id=?',
-                                    (now+min(3600,30*2**min(attempts,7)),uid,ident))
+                    self.db.execute('INSERT INTO events VALUES(?,?,?)',(time.time(),'retry',uid))
+                    self.db.execute('UPDATE queue SET attempts=attempts+1,media_failures=media_failures+?,due=? WHERE uid=? AND id=?',
+                                    (int(bool(getattr(exc,'media_failure',False))),now+min(3600,30*2**min(attempts,7)),uid,ident))
                 logging.warning('Delivery deferred uid=%s id=%s error_type=%s',uid,ident,type(exc).__name__)
             else:
                 with self.db:
+                    self.db.execute('INSERT INTO events VALUES(?,?,?)',(time.time(),'sent',uid))
                     self.db.execute('UPDATE queue SET sent=1 WHERE uid=? AND id=?',(uid,ident))
                 logging.info('Delivered queued dynamic uid=%s id=%s',uid,ident)
 
@@ -56,7 +77,9 @@ def fetch_pages(w, user, config, old):
     raise w.WatcherError('History page limit reached; cursor retained; increase recovery_max_pages')
 
 def install(w, base, ensure_time):
+    from dynamic_images import ImageClient,dynamic_media
     box=Outbox(base/'data/outbox.sqlite3')
+    image_client=[None]
     # Import legacy progress once. Never overwrite an existing queue cursor.
     state=json.loads((base/'data/state.json').read_text())
     with box.db:
@@ -81,6 +104,7 @@ def install(w, base, ensure_time):
                     row=box.db.execute('SELECT id FROM cursor WHERE uid=?',(user.uid,)).fetchone()
                     old=row[0] if row else ''
                     items=fetch_pages(w,user,config,old)
+                    box.event('empty' if not items else 'checked',user.uid)
                     if not items: continue
                     items=sorted(items,key=lambda x:int(x.get('id_str') or x.get('id')))
                     newest=str(items[-1].get('id_str') or items[-1].get('id'))
@@ -91,13 +115,24 @@ def install(w, base, ensure_time):
                         item=w.extract_dynamic(dynamic,user.uid,user.name)
                         item=w.fill_dynamic_detail_text(item,user.uid,user.name,config.get('bilibili_cookie') or None,dynamic)
                         title,body=w.format_message(item,config.get('feishu_keyword') or None)
-                        messages.append((user.uid,item['id'],title,body))
+                        images=[]
+                        if config.get('enable_dynamic_images',False):
+                            images,missing=dynamic_media(w,dynamic,item,user.uid,user.name,config.get('bilibili_cookie') or None)
+                            if missing:body+='\n\n配图地址暂未获取；若原动态含图片，请打开原动态查看。'
+                        messages.append((user.uid,item['id'],title,body,images))
                     box.record(user.uid,newest if not old or int(newest)>int(old) else old,messages)
                     logging.info('History checked uid=%s queued=%s',user.uid,len(messages))
                 except Exception as exc:
+                    box.event('collection_error',user.uid)
                     logging.warning('Collection deferred uid=%s error_type=%s reason=%s',user.uid,type(exc).__name__,str(exc))
-        def send(title,body):
+        def send(title,body,images=None,allow_fallback=False):
             ensure_time()
+            if images and config.get('enable_dynamic_images',False):
+                if image_client[0] is None:
+                    image_config=dict(config);image_config['_image_temp_dir']=str(base/'data/image-tmp')
+                    image_client[0]=ImageClient(image_config,box.db,ensure_time,w.feishu_signature)
+                return image_client[0].send(title,body,images,allow_fallback)
+            if images:body+='\n\n当前配置已关闭配图，图片请打开原动态查看。'
             w.post_to_feishu(config['feishu_webhook'],title,body,config.get('feishu_secret') or None)
         box.deliver(send,time.time())
         return 0

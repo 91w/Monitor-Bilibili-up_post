@@ -12,6 +12,12 @@ def apply(raw):
     interval=int(config.get('interval_seconds',300))
     if not 30<=interval<=86400: raise ValueError('interval_seconds must be 30..86400')
     if not isinstance(config.get('bilibili_cookie',''),str): raise ValueError('Cookie must be a string')
+    if not isinstance(config.get('enable_dynamic_images',False),bool):raise ValueError('enable_dynamic_images must be boolean')
+    if config.get('enable_dynamic_images'):
+        if not all(isinstance(config.get(k),str) and config[k].strip() for k in ('feishu_app_id','feishu_app_secret')):raise ValueError('Image app credentials required')
+    if not 1<=int(config.get('max_dynamic_images',18))<=30:raise ValueError('max_dynamic_images must be 1..30')
+    if not 0<=int(config.get('daily_report_hour',21))<=23:raise ValueError('daily_report_hour must be 0..23')
+    if not isinstance(config.get('daily_report_enabled',True),bool):raise ValueError('daily_report_enabled must be boolean')
     config['poll_interval_seconds']=interval
     # Poll collection at the configured interval, retry the outbox every 30 seconds.
     config['interval_seconds']=30
@@ -38,8 +44,14 @@ def atomic(path,raw):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
+    def do_GET(self):
+        if self.path!='/':self.send_error(404);return
+        page=(BASE/'app/config_page.html').read_bytes()
+        self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('X-Frame-Options','DENY');self.send_header('Content-Length',str(len(page)));self.end_headers();self.wfile.write(page)
     def do_POST(self):
         try:
+            origin=self.headers.get('Origin')
+            if origin and origin!='https://'+self.headers.get('Host',''):raise ValueError('Invalid origin')
             if self.path!='/config': raise ValueError('Unknown route')
             length=int(self.headers.get('Content-Length','0'))
             if not 0<length<=262144: raise ValueError('Invalid length')

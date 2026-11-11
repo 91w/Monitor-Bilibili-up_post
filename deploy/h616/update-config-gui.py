@@ -1,10 +1,10 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from pathlib import Path
-import subprocess, sys, threading
+import os, subprocess, sys, threading
 root=tk.Tk();root.title('开发板监听配置更新');root.geometry('630x245')
-config=tk.StringVar(value=r'D:\bWebMonitor\b-up\outputs\config.json')
-host=tk.StringVar(value='192.168.0.145')
+config=tk.StringVar(value=os.environ.get('B_UP_CONFIG_PATH',str(Path(__file__).resolve().parents[2]/'config.json')))
+host=tk.StringVar(value='')
 wireless=tk.BooleanVar(value=True)
 tk.Label(root,text='配置文件（包含 Cookie，请仅保存在自己的电脑）').pack(anchor='w',padx=15,pady=6)
 tk.Entry(root,textvariable=config,width=85).pack(padx=15)

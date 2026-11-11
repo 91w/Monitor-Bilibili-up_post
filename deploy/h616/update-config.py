@@ -1,11 +1,11 @@
 """USB or mutually authenticated TLS configuration upload. Never prints credentials."""
-import argparse, json, ssl, http.client, subprocess
+import os, argparse, json, ssl, http.client, subprocess
 from pathlib import Path
 p=argparse.ArgumentParser()
-p.add_argument('--config',default=r'D:\bWebMonitor\b-up\outputs\config.json')
+p.add_argument('--config',default=os.environ.get('B_UP_CONFIG_PATH',str(Path(__file__).resolve().parents[2]/'config.json')))
 p.add_argument('--host',help='Board LAN IP; omit to use USB')
-p.add_argument('--pairing',default=r'D:\CodexProjects\work\b-up-reliable\pairing')
-p.add_argument('--adb',default=r'D:\firefox\AllwinnertechPhoeniSuitRelease20201225.zip\AllwinnertechPhoeniSuitRelease20201225\adb.exe')
+p.add_argument('--pairing',default=os.environ.get('B_UP_PAIRING_DIR',str(Path.home()/'.b-up/pairing')))
+p.add_argument('--adb',default=os.environ.get('B_UP_ADB','adb'))
 a=p.parse_args()
 raw=Path(a.config).read_bytes(); json.loads(raw.decode('utf-8-sig'))
 if a.host:

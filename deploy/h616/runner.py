@@ -13,7 +13,7 @@ import time
 time.tzset()
 
 config = json.loads((BASE / "data/config.json").read_text(encoding="utf-8-sig"))
-secrets = [str(config.get(k, "")) for k in ("bilibili_cookie", "feishu_webhook", "feishu_secret")]
+secrets = [str(config.get(k, "")) for k in ("bilibili_cookie", "feishu_webhook", "feishu_secret", "feishu_app_secret")]
 # Also redact individual cookie values in exceptions if an upstream response includes them.
 for item in str(config.get("bilibili_cookie", "")).split(";"):
     if "=" in item:

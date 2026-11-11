@@ -1,0 +1,8 @@
+{
+  "enable_dynamic_images": false,
+  "feishu_app_id": "",
+  "feishu_app_secret": "",
+  "max_dynamic_images": 18,
+  "daily_report_enabled": true,
+  "daily_report_hour": 21
+}

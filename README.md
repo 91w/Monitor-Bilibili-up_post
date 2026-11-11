@@ -138,4 +138,6 @@ Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStop"
 
 ## H616 全天监听与无线维护
 
+已增加动态配图（沿用原Webhook，应用上传图片）、局域网状态页、每日运行摘要与Windows路由器查询/三天IP缓存入口。部署步骤、凭据配置、图片资源限制与失败降级策略见 [开发板说明](deploy/h616/README.md)。不要上传实际config、Cookie、App Secret、证书私钥或运行数据库。
+
 开发板适配入口与部署说明见 [deploy/h616](deploy/h616/README.md)：SQLite 持久化待发送队列、失败退避重试、历史分页补抓、NTP 发送保护，以及 USB / 局域网双向 TLS 配置更新。Windows 原入口保持原工作方式，使用 runner.py 才启用开发板队列。
