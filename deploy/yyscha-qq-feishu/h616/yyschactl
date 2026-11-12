@@ -1,0 +1,45 @@
+#!/bin/sh
+# Adapted from Monitor-Bilibili-up_post deploy/h616/b-upctl.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+BASE=/overlay/yyscha
+SSL_CERT_FILE=/overlay/b-up-runtime/python/lib/python3.11/site-packages/certifi/cacert.pem
+export SSL_CERT_FILE
+PID=/var/run/yyscha-watcher.pid
+stop_child() {
+    [ -s "$PID" ] || return 0
+    p=$(cat "$PID")
+    case "$p" in ''|*[!0-9]*) return 0 ;; esac
+    if [ -r "/proc/$p/cmdline" ] && tr '\000' ' ' <"/proc/$p/cmdline" | grep -q '/overlay/yyscha/app/runner.py'; then
+        kill "$p" 2>/dev/null
+    fi
+}
+case "${1:-status}" in
+    start|collect)
+        mode=live
+        [ "$1" != collect ] || mode=collect
+        printf '%s\n' "$mode" >"$BASE/data/run-mode"
+        touch "$BASE/data/enabled"
+        stop_child
+        nohup sh "$BASE/app/yyscha-service" </dev/null >/dev/null 2>&1 &
+        echo "Enabled mode=$mode; waiting for trusted time."
+        ;;
+    stop)
+        rm -f "$BASE/data/enabled"
+        stop_child
+        echo 'Stopped; queue and baseline retained.'
+        ;;
+    status)
+        if [ -e "$BASE/data/enabled" ]; then printf 'enabled=yes mode='; cat "$BASE/data/run-mode"; else echo enabled=no; fi
+        if [ -s "$PID" ]; then
+            p=$(cat "$PID")
+            case "$p" in ''|*[!0-9]*) echo watcher=invalid-pid ;; *) if kill -0 "$p" 2>/dev/null; then echo "watcher_pid=$p"; else echo watcher=not-running; fi ;; esac
+        else echo watcher=not-running; fi
+        /overlay/b-up-runtime/python/bin/python3 "$BASE/app/relay.py" status --db "$BASE/data/state.sqlite3"
+        ;;
+    logs) tail -30 "$BASE/logs/relay.log" ;;
+    recover) exec /overlay/b-up-runtime/python/bin/python3 "$BASE/app/recovery_web.py" ;;
+    session) exec /overlay/b-up-runtime/python/bin/python3 "$BASE/app/relay.py" session-status ;;
+    *) echo 'Usage: yyschactl {start|collect|stop|status|logs|recover|session}'; exit 2 ;;
+esac

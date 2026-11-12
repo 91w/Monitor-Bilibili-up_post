@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.test-work/
+private/
+data/
+logs/
+*.sqlite3*
+*.db*
+config*.json
+!config.example.json
+*.auth-new
+*.new
+cookies*.txt
+*.har
+*.key
+*.pem

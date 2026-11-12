@@ -1,0 +1,13 @@
+{
+  "site_cookie": "",
+  "uids": ["u_example_1", "u_example_2", "u_example_3"],
+  "feishu_webhook": "",
+  "feishu_secret": "",
+  "feishu_app_id": "",
+  "feishu_app_secret": "",
+  "max_chat_images": 6,
+  "feishu_keyword": "",
+  "interval_seconds": 15,
+  "previous_day_minutes": 10,
+  "require_trusted_time": false
+}

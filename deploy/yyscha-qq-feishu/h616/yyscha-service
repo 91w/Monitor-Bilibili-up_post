@@ -1,0 +1,38 @@
+#!/bin/sh
+# Adapted from Monitor-Bilibili-up_post deploy/h616/b-up-service.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH TZ=CST-8
+umask 077
+BASE=/overlay/yyscha
+PY=/overlay/b-up-runtime/python/bin/python3
+SSL_CERT_FILE=/overlay/b-up-runtime/python/lib/python3.11/site-packages/certifi/cacert.pem
+export SSL_CERT_FILE
+[ -s "$SSL_CERT_FILE" ] || exit 1
+PID=/var/run/yyscha-watcher.pid
+exec 9>/var/run/yyscha-service.lock
+flock -n 9 || exit 0
+child=
+cleanup() {
+    [ -z "$child" ] || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
+    rm -f "$PID"
+}
+trap 'exit 0' TERM INT
+trap cleanup EXIT
+while :; do
+    if [ ! -e "$BASE/data/enabled" ]; then sleep 5 9>&-; continue; fi
+    if ! "$PY" "$BASE/app/timeguard.py" >/dev/null 2>&1; then sleep 10 9>&-; continue; fi
+    mode=$(cat "$BASE/data/run-mode" 2>/dev/null)
+    set -- run --config "$BASE/data/config.json" --db "$BASE/data/state.sqlite3"
+    case "$mode" in
+        live) set -- "$@" --send ;;
+        collect) ;;
+        *) sleep 5 9>&-; continue ;;
+    esac
+    "$PY" "$BASE/app/runner.py" "$@" 9>&- >/dev/null 2>&1 &
+    child=$!
+    echo "$child" >"$PID"
+    wait "$child"
+    child=
+    rm -f "$PID"
+    sleep 15 9>&-
+done
