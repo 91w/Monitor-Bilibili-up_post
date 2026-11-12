@@ -9,6 +9,7 @@
   "max_chat_images": 6,
   "feishu_keyword": "",
   "interval_seconds": 15,
+  "notification_polling": true,
   "previous_day_minutes": 10,
   "require_trusted_time": false
 }

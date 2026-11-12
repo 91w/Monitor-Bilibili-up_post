@@ -162,6 +162,8 @@ class FileClient:
                 file.seek(0)
                 yield file
         except HTTPError as exc:
+            if exc.code == 429:
+                raise r.RateLimited(r.retry_delay(exc.headers.get('Retry-After'))) from None
             if exc.code == 404:
                 raise r.Failure('源站附件返回HTTP404，暂无法下载；保留队列等待重试') from None
             raise r.Failure(f'附件下载HTTP{exc.code}，保留队列等待重试') from None

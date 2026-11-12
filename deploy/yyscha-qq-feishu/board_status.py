@@ -20,7 +20,7 @@ def main():
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
     text = result.stdout.decode('utf-8', errors='replace').replace('\r', '')
     allowed = ('已启用持久会话', '含记住登录凭据', '服务器已知到期时间', '未提供有效期',
-               'enabled=', 'watcher=', 'watcher_pid=', '等待重试', '{')
+               'enabled=', 'watcher=', 'watcher_pid=', '等待重试', '检测模式：', '{')
     lines = [line for line in text.splitlines() if line.startswith(allowed)]
     if not lines:
         print('未取得开发板状态，请确认USB连接。此入口不显示电脑迁移前的旧队列。')

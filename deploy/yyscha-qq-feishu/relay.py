@@ -27,6 +27,26 @@ class AuthRequired(Failure):
     pass
 
 
+class RateLimited(Failure):
+    def __init__(self, retry_after=60):
+        self.retry_after = retry_after
+        super().__init__('网站要求延迟重试；暂停源站请求，保留队列')
+
+
+def retry_delay(header, now=None):
+    from email.utils import parsedate_to_datetime
+    try:
+        value = float(header)
+        if value >= 0 and value < float('inf'):
+            return max(60, value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        return max(60, parsedate_to_datetime(header).timestamp() - (time.time() if now is None else now))
+    except (ValueError, TypeError, OverflowError, AttributeError):
+        return 60
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         target = args[-1] if args else kwargs.get('newurl')
@@ -54,6 +74,8 @@ def request_json(url, headers=None, payload=None, session=None):
             raise Failure('响应不是JSON对象')
         return result
     except HTTPError as exc:
+        if session is not None and exc.code == 429:
+            raise RateLimited(retry_delay(exc.headers.get('Retry-After'))) from None
         if session is not None and exc.code in (401, 403):
             raise AuthRequired('网站会话需要重新验证，请打开登录恢复入口') from None
         raise Failure(f'HTTP {exc.code}：检查网络、登录或机器人配置') from None
@@ -367,7 +389,11 @@ def drain(db, config, sender=feishu, now=None, image_client=None):
         except Failure as exc:
             with db:
                 db.execute("UPDATE messages SET status='retry',attempts=?,next_try=?,error=? WHERE scope=? AND id=?", (attempts + 1, now + min(3600, 15 * 2 ** min(attempts, 8)), str(exc), scope, mid))
+                if isinstance(exc, RateLimited):
+                    db.execute("INSERT OR REPLACE INTO meta VALUES('site_backoff_until',?)", (str(now + exc.retry_after),))
             logging.error('%s；消息已保留等待重试', exc)
+            if isinstance(exc, RateLimited):
+                break
         else:
             with db:
                 db.execute("UPDATE messages SET status='sent',error=NULL WHERE scope=? AND id=?", (scope, mid))
@@ -393,6 +419,8 @@ def load_config(path, allow_missing_cookie=False):
         raise Failure('飞书Webhook地址无效')
     if not isinstance(config.get('interval_seconds', 15), (int, float)) or config.get('interval_seconds', 15) < 15:
         raise Failure('轮询间隔至少15秒')
+    if not isinstance(config.get('notification_polling', False), bool):
+        raise Failure('notification_polling必须是布尔值')
     config['_config_path'] = str(Path(path).resolve())
     return config
 
@@ -412,6 +440,10 @@ def main():
         db = connect(args.db)
         print(dict(db.execute('SELECT status,count(*) FROM messages GROUP BY status')))
         print('等待重试：', db.execute("SELECT count(*) FROM messages WHERE status='retry'").fetchone()[0])
+        notification_status = db.execute("SELECT value FROM meta WHERE key='notification_poll_status'").fetchone()
+        if notification_status:
+            status = json.loads(notification_status[0])
+            print('检测模式：', status.get('mode'), '最近结果：', status.get('outcome'), '下次间隔秒数：', status.get('next_delay_seconds'))
         return
     config = load_config(args.config)
     if args.command == 'session-status':
@@ -445,6 +477,8 @@ def main():
     db = connect(args.db)
     from media_feishu import ImageClient
     image_client = ImageClient(config, db) if args.send else None
+    from notification_polling import NotificationPolling
+    notification = NotificationPolling() if config.get('notification_polling', False) and args.command == 'run' else None
     # 整个生命周期占用独占锁，避免两个进程同时发送同一队列。
     lock = sqlite3.connect(str(args.db) + '.lock', timeout=0)
     lock.execute('CREATE TABLE IF NOT EXISTS guard(id INTEGER)')
@@ -462,7 +496,16 @@ def main():
                 config.update(refreshed)
                 if changed_app and args.send:
                     image_client = ImageClient(config, db)
-                poll(db, source, config)
+                if notification:
+                    checked = notification.tick(db, source, config)
+                else:
+                    poll(db, source, config)
+                    checked = True
+                if not checked:
+                    if args.send and notification.allow_delivery:
+                        drain(db, config, image_client=image_client)
+                    time.sleep(max(0, min(15, config.get('interval_seconds', 15)) - (time.monotonic() - started)))
+                    continue
                 prior_auth = db.execute("SELECT value FROM meta WHERE key='auth_required'").fetchone()
                 with db:
                     db.execute("INSERT OR REPLACE INTO meta VALUES('auth_required','0')")
@@ -497,7 +540,7 @@ def main():
             except Failure as exc:
                 failed = True
                 logging.error('%s；保留游标，下轮重试', exc)
-            if args.send:
+            if args.send and (notification is None or notification.allow_delivery):
                 drain(db, config, image_client=image_client)
             if args.command == 'once':
                 if failed:
