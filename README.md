@@ -1,38 +1,38 @@
-# Bilibili ��̬���� + ����Ⱥ������֪ͨ
+# Bilibili 动态监听 + 飞书群机器人通知
 
-һ���������е� Python �ű�����������ָ�� B վ UP �������¶�̬�������¶�̬���ݷ��͵�����Ⱥ�����ˡ�
+一个本地运行的 Python 脚本，用来监听指定 B 站 UP 主的最新动态，并把新动态内容发送到飞书群机器人。
 
-֧���ı���̬��ͼ�Ķ�̬
+支持文本动态、图文动态
 
-## ����
+## 功能
 
-- ����һ������ B վ UP ����̬
-- �¶�̬���͵�����Ⱥ������
-- ֧�ַ�������˹ؼ���У���ǩ��У��
-- ʹ�� `state.json` ��¼�Ѵ�����̬�������ظ�֪ͨ
-- ֧�� `--dry-run` ����Ԥ������ʵ�ʷ��ͷ���
-- ֧�� Windows ����ƻ���ÿ�춨ʱ��������ʱֹͣ
+- 监听一个或多个 B 站 UP 主动态
+- 新动态发送到飞书群机器人
+- 支持飞书机器人关键词校验和签名校验
+- 使用 `state.json` 记录已处理动态，避免重复通知
+- 支持 `--dry-run` 本地预览，不实际发送飞书
+- 支持 Windows 任务计划：每天定时启动、定时停止
 
-## �ļ�˵��
+## 文件说明
 
 ```text
-bilibili_feishu_watcher.py     ���ű�
-config.example.json            ����ģ��
-config.json                    �������ã������д���
-state.json                     ���к��Զ����ɣ���¼ÿ�� UP �����¶�̬ ID
-install_scheduled_tasks.ps1    Windows ��ʱ����/ֹͣ����װ�ű�
-uninstall_scheduled_tasks.ps1  Windows ��ʱ����ж�ؽű�
-requirements.txt               Python ����
+bilibili_feishu_watcher.py     主脚本
+config.example.json            配置模板
+config.json                    本地配置，需自行创建
+state.json                     运行后自动生成，记录每个 UP 的最新动态 ID
+install_scheduled_tasks.ps1    Windows 定时启动/停止任务安装脚本
+uninstall_scheduled_tasks.ps1  Windows 定时任务卸载脚本
+requirements.txt               Python 依赖
 ```
 
-## ׼�����������
+## 准备飞书机器人
 
-1. �ڷ���Ⱥ�����ӡ��Զ�������ˡ���
-2. ���ƻ����˵� Webhook ��ַ������ `feishu_webhook`��
-3. ��������ˡ��ؼ��ʡ���ȫ���ã��ѹؼ������� `feishu_keyword`��
-4. ��������ˡ�ǩ��У�顱����ǩ����Կ���� `feishu_secret`��
+1. 在飞书群里添加“自定义机器人”。
+2. 复制机器人的 Webhook 地址，填入 `feishu_webhook`。
+3. 如果开启了“关键词”安全设置，把关键词填入 `feishu_keyword`。
+4. 如果开启了“签名校验”，把签名密钥填入 `feishu_secret`。
 
-## ��װ����
+## 安装依赖
 
 ```powershell
 python -m pip install -r .\requirements.txt
@@ -42,15 +42,15 @@ python -m pip install -r .\requirements.txt
 python -m pip install requests
 ```
 
-## ��������
+## 创建配置
 
-����ģ�壺
+复制模板：
 
 ```powershell
 Copy-Item .\config.example.json .\config.json
 ```
 
-�༭ `config.json`��
+编辑 `config.json`：
 
 ```json
 {
@@ -63,92 +63,92 @@ Copy-Item .\config.example.json .\config.json
   "up_users": [
     {
       "uid": "2",
-      "name": "ʾ��UP��"
+      "name": "示例UP主"
     }
   ]
 }
 ```
 
-�ֶ�˵����
+字段说明：
 
-- `interval_seconds`����������ʱ�ļ��������λ�룬���鲻���� `300`��
-- `notify_on_first_run`���״�����ʱ�Ƿ��͵�ǰ���¶�̬����ʽ���н�����Ϊ `false`��
-- `bilibili_cookie`����ѡ���ӿ����޻���Ҫ��¼̬ʱ��д�������� B վ Cookie��
-- `feishu_webhook`�������Զ�������˵� Webhook��
-- `feishu_secret`�����������ǩ����Կ��δ����ǩ��У�������ա�
-- `feishu_keyword`����������˹ؼ���У��ʣ�δ�����ؼ���У�������ա�
-- `up_users`��Ҫ������ UP ���б���`uid` �ǿռ��ַ������֣����� `https://space.bilibili.com/123456` �� UID �� `123456`��
+- `interval_seconds`：长期运行时的检查间隔，单位秒，建议不少于 `300`。
+- `notify_on_first_run`：首次运行时是否发送当前最新动态。正式运行建议设为 `false`。
+- `bilibili_cookie`：可选。接口受限或需要登录态时填写浏览器里的 B 站 Cookie。
+- `feishu_webhook`：飞书自定义机器人的 Webhook。
+- `feishu_secret`：飞书机器人签名密钥；未开启签名校验则留空。
+- `feishu_keyword`：飞书机器人关键词校验词；未开启关键词校验则留空。
+- `up_users`：要监听的 UP 主列表。`uid` 是空间地址里的数字，例如 `https://space.bilibili.com/123456` 的 UID 是 `123456`。
 
-## Windows ��ʱ������ֹͣ
+## Windows 定时启动和停止
 
-�ֿ��ṩ��һ����װ����ƻ��Ľű���Ĭ��ÿ�� `08:00` ������`23:30` ֹͣ��
+仓库提供了一键安装任务计划的脚本。默认每天 `08:00` 启动，`23:30` 停止。
 
 ```powershell
 .\install_scheduled_tasks.ps1
 ```
 
-�Զ���ʱ�䣺
+自定义时间：
 
 ```powershell
 .\install_scheduled_tasks.ps1 -StartAt "09:00" -StopAt "22:00"
 ```
 
-�ֶ�������������
+手动测试启动任务：
 
 ```powershell
 Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStart"
 ```
 
-�ֶ�����ֹͣ����
+手动测试停止任务：
 
 ```powershell
 Start-ScheduledTask -TaskName "BilibiliFeishuWatcherStop"
 ```
 
-ж������ƻ���
+卸载任务计划：
 
 ```powershell
 .\uninstall_scheduled_tasks.ps1
 ```
 
-## ��������
+## 常见问题
 
-### �״�����û�з�����Ϣ
+### 首次运行没有发送消息
 
-��� `notify_on_first_run` �� `false`���״�����ֻ���ʼ�� `state.json`�����ᷢ�͵�ǰ���ж�̬������Ϊ�˱�������������;���Ϣ��
+如果 `notify_on_first_run` 是 `false`，首次运行只会初始化 `state.json`，不会发送当前已有动态。这是为了避免刚启动就推送旧消息。
 
-### ���鷵�� `Key Words Not Found`
+### 飞书返回 `Key Words Not Found`
 
-��������˿����˹ؼ���У�飬����Ϣ����û�����йؼ��ʡ�����д��
+飞书机器人开启了关键词校验，但消息内容没有命中关键词。请填写：
 
 ```json
-"feishu_keyword": "��Ĺؼ���"
+"feishu_keyword": "你的关键词"
 ```
 
-### �ղ����¶�̬
+### 收不到新动态
 
-���飺
+请检查：
 
-- `up_users.uid` �Ƿ���ȷ
-- `state.json` �Ƿ��Ѿ���¼�˸� UP �����¶�̬
-- ��������� Webhook �Ͱ�ȫ�����Ƿ���ȷ
-- `bilibili_cookie` �Ƿ����
+- `up_users.uid` 是否正确
+- `state.json` 是否已经记录了该 UP 的最新动态
+- 飞书机器人 Webhook 和安全设置是否正确
+- `bilibili_cookie` 是否过期
 
 
 
-## H616 ȫ�����������ά��
+## H616 全天监听与无线维护
 
-�����Ӷ�̬��ͼ������ԭWebhook��Ӧ���ϴ�ͼƬ����������״̬ҳ��ÿ������ժҪ��Windows·������ѯ/����IP������ڡ������衢ƾ�����á�ͼƬ��Դ������ʧ�ܽ������Լ� [������˵��](deploy/h616/README.md)����Ҫ�ϴ�ʵ��config��Cookie��App Secret��֤��˽Կ���������ݿ⡣
+已增加动态配图（沿用原Webhook，应用上传图片）、局域网状态页、每日运行摘要与Windows路由器查询/三天IP缓存入口。部署步骤、凭据配置、图片资源限制与失败降级策略见 [开发板说明](deploy/h616/README.md)。不要上传实际config、Cookie、App Secret、证书私钥或运行数据库。
 
-��������������벿��˵���� [deploy/h616](deploy/h616/README.md)��SQLite �־û������Ͷ��С�ʧ���˱����ԡ���ʷ��ҳ��ץ��NTP ���ͱ������Լ� USB / ������˫�� TLS ���ø��¡�Windows ԭ��ڱ���ԭ������ʽ��ʹ�� runner.py �����ÿ�������С�
+开发板适配入口与部署说明见 [deploy/h616](deploy/h616/README.md)：SQLite 持久化待发送队列、失败退避重试、历史分页补抓、NTP 发送保护，以及 USB / 局域网双向 TLS 配置更新。Windows 原入口保持原工作方式，使用 runner.py 才启用开发板队列。
 
-## H616 QQ ����Ա��Ϣת������
+## H616 QQ 管理员消息转发备份
 
-QQ/NapCat ��Դ�롢���ԡ��洢ά���뻻���¼�� [QQ ת������Ŀ¼](deploy/napcat-h616/README.md)��Bվ��QQȺ������������Ϣ��Դ����ǰ����������ʱ��ͷ���ͼƬ�ϴ����롣QQ ��������������ˡ��־û��������Ժϲ����Լ�������ͼͬ��֪ͨ��75 ���������ͨ����
+QQ/NapCat 的源码、测试、存储维护与换板记录见 [QQ 转发部署目录](deploy/napcat-h616/README.md)。B站和QQ群是两个独立消息来源，当前部署共享可信时间和飞书图片上传代码。QQ 部分新增表情过滤、持久化连续发言合并，以及文字配图同条通知；75 项组件测试通过。
 
-������������Դ�������˵�����������롢Webhook��Token����¼̬���������ݿ�����ж��С�ʾ��Ⱥ�ż� Windows USB ����·���谴ʵ�ʻ������á�
+公开副本仅含源码和脱敏说明，不含密码、Webhook、Token、登录态、聊天数据库或运行队列。示例群号及 Windows USB 工具路径需按实际环境配置。
 
-## yyscha ��ҳָ���û���Ϣת��
+## yyscha 网页指定用户消息转发
 
-���������� [��ҳ��Ϣת��Ŀ¼](deploy/yyscha-qq-feishu/README.md)����UID��ҳ�ɼ���SQLite���������ԡ����ûҿ���ʵͼƬ�ϴ���Cookie�־ûỰ�ͱ��ص�¼�ָ����������Ȩ�����еı����ɼ�����鷢����֤������Ŀ��ʽH616Ǩ�ơ��ƶ˼�����ת�ͷ��鷴�������δ��ɡ��������ղ���ʵ��UID������ƾ�ݡ������¼���������ݿ⣻ԭBվ��NapCat�ļ�����ԭ����
+新增独立的 [网页消息转发目录](deploy/yyscha-qq-feishu/README.md)：按UID分页采集、SQLite基线与重试、引用灰框、真实图片上传、Cookie持久会话和本地登录恢复。已完成授权环境中的本机采集与飞书发送验证；本项目正式H616迁移、云端加密中转和飞书反向接收尚未完成。公开快照不含实际UID名单、凭据、聊天记录或运行数据库；原B站和NapCat文件保持原样。
 

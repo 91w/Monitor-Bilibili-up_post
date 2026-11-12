@@ -91,11 +91,11 @@ class MediaTest(unittest.TestCase):
 
     def test_card_contains_text_image_and_signature(self):
         with patch.object(self.client, 'upload', return_value='img_test'), patch('relay.request_json', return_value={'code': 0}) as request:
-            self.client.send('����\n�ظ�', [{'url': URL, 'context': 'quote'}])
+            self.client.send('引用\n回复', [{'url': URL, 'context': 'quote'}])
             payload = request.call_args.kwargs['payload']
             self.assertEqual(payload['msg_type'], 'interactive')
             self.assertEqual(payload['card']['elements'][1]['img_key'], 'img_test')
-            self.assertEqual(payload['card']['elements'][1]['alt']['content'], '������ͼ')
+            self.assertEqual(payload['card']['elements'][1]['alt']['content'], '引用配图')
             self.assertIn('sign', payload)
 
     def test_failed_card_is_not_business_success(self):
@@ -115,56 +115,56 @@ class MediaTest(unittest.TestCase):
         self.db.execute("ALTER TABLE messages ADD COLUMN parts_json TEXT DEFAULT '{}'")
         self.db.commit()
         client = Mock()
-        client.send.side_effect = r.Failure('ģ��ͼƬʧ��')
+        client.send.side_effect = r.Failure('模拟图片失败')
         with patch('relay.time.sleep'):
             r.drain(self.db, self.config, now=100, image_client=client)
         row = self.db.execute('SELECT status,attempts FROM messages').fetchone()
         self.assertEqual(row, ('retry', 1))
 
     def test_quote_gray_box_and_reply_are_separate(self):
-        parts = {'header': 'Ŀ�� �� 11-11 10:00', 'quote': {'author': '��һλ', 'time': '', 'text': '������ԭ��'}, 'body': '��ǰ�ظ�', 'link': 'https://www.yyscha.cn/application/QQ/day.php?day=2026-11-11'}
+        parts = {'header': '目标 · 11-11 10:00', 'quote': {'author': '另一位', 'time': '', 'text': '被引用原话'}, 'body': '当前回复', 'link': 'https://www.yyscha.cn/application/QQ/day.php?day=2026-11-11'}
         elements = card_elements('fallback', parts, [('q-key', 'quote'), ('b-key', 'body')])
         box = next(e for e in elements if e['tag'] == 'column_set')
         self.assertEqual(box['background_style'], 'grey')
         inner = box['columns'][0]['elements']
-        self.assertEqual(inner[1]['text']['content'], '������ԭ��')
+        self.assertEqual(inner[1]['text']['content'], '被引用原话')
         self.assertEqual(inner[2]['img_key'], 'q-key')
-        self.assertNotIn('��ǰ�ظ�', json.dumps(box, ensure_ascii=False))
-        self.assertTrue(any(e.get('text', {}).get('content') == '�ظ�\n��ǰ�ظ�' for e in elements))
+        self.assertNotIn('当前回复', json.dumps(box, ensure_ascii=False))
+        self.assertTrue(any(e.get('text', {}).get('content') == '回复\n当前回复' for e in elements))
         self.assertTrue(any(e.get('img_key') == 'b-key' for e in elements))
-        self.assertNotIn('ʱ��δ֪', json.dumps(elements, ensure_ascii=False))
-        self.assertEqual(elements[-1]['text']['content'].split(']')[0], '[�鿴ԭ����')
+        self.assertNotIn('时间未知', json.dumps(elements, ensure_ascii=False))
+        self.assertEqual(elements[-1]['text']['content'].split(']')[0], '[查看原聊天')
 
     def test_plain_user_content_is_not_interpreted_as_markdown(self):
-        parts = {'header': 'Ŀ��', 'quote': {'author': '��һλ', 'text': '**ԭ��** <at id=all>'}, 'body': '<font>�ظ�</font>'}
+        parts = {'header': '目标', 'quote': {'author': '另一位', 'text': '**原话** <at id=all>'}, 'body': '<font>回复</font>'}
         elements = card_elements('', parts, [])
         inner = elements[1]['columns'][0]['elements']
         self.assertEqual(inner[1]['text']['tag'], 'plain_text')
-        self.assertEqual(inner[1]['text']['content'], '**ԭ��** <at id=all>')
+        self.assertEqual(inner[1]['text']['content'], '**原话** <at id=all>')
 
     def test_quote_only_card_does_not_require_image_credentials(self):
         client = ImageClient({'feishu_webhook': 'local-hook'}, self.db)
-        parts = {'header': 'Ŀ��', 'quote': {'author': '��һλ', 'text': 'ԭ��'}, 'body': '�ظ�'}
+        parts = {'header': '目标', 'quote': {'author': '另一位', 'text': '原话'}, 'body': '回复'}
         with patch.object(client, 'upload') as upload, patch('relay.request_json', return_value={'code': 0}) as request:
             client.send('legacy', [], parts=parts)
         upload.assert_not_called()
         self.assertEqual(request.call_args.kwargs['payload']['card']['elements'][1]['tag'], 'column_set')
 
     def test_qq_face_is_text_not_attachment(self):
-        item = {'id': 'm', 'uid': 'u_one', 'html': '<div class="content">�ظ�<img class="face-emoji face-emoji-image" src="https://koishi.js.org/QFace/assets/qq_emoji/13/apng/13.png" alt="/����"></div>'}
-        self.assertEqual(r.message_parts(item, '2026-11-11')['body'], '�ظ�/����')
+        item = {'id': 'm', 'uid': 'u_one', 'html': '<div class="content">回复<img class="face-emoji face-emoji-image" src="https://koishi.js.org/QFace/assets/qq_emoji/13/apng/13.png" alt="/呲牙"></div>'}
+        self.assertEqual(r.message_parts(item, '2026-11-11')['body'], '回复/呲牙')
         self.assertEqual(extract_images(item), [])
         from history_test import category
-        self.assertEqual(category(item), '��ͨ��Ϣ������')
+        self.assertEqual(category(item), '普通消息＋文字')
 
     def test_avatar_not_rendered_as_chat_image(self):
         self.assertEqual(r.DOM('<img src="https://q.qlogo.cn/g?b=qq">').root.plain(), '')
 
     def test_missing_key_never_says_image_below(self):
-        parts = {'header': 'Ŀ��', 'quote': {'author': '��һλ', 'text': '[ͼƬ��quote.png]'}, 'body': '[ͼƬ��body.png]'}
+        parts = {'header': '目标', 'quote': {'author': '另一位', 'text': '[图片：quote.png]'}, 'body': '[图片：body.png]'}
         serialized = json.dumps(card_elements('', parts, []), ensure_ascii=False)
-        self.assertNotIn('���·�', serialized)
-        self.assertIn('ͼƬδ��', serialized)
+        self.assertNotIn('见下方', serialized)
+        self.assertIn('图片未附', serialized)
 
 
 if __name__ == '__main__':

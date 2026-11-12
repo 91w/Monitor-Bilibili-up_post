@@ -4,7 +4,7 @@ import relay as r
 from history_test import fetch_day, select_samples, category
 
 
-def item(i, uid='u_one', html='<div class="content">����</div>'):
+def item(i, uid='u_one', html='<div class="content">正文</div>'):
     return {'id': str(i), 'uid': uid, 'html': html, 'type': 'text'}
 
 
@@ -23,7 +23,7 @@ class HistoryTest(unittest.TestCase):
 
     def test_selection_covers_categories_and_caps_count(self):
         url = 'serve.php?record=x&path=a.png'
-        items = [item(1), item(2, html='<div class="content"><div class="reply-content">����</div>�ظ�</div>'), item(3, html=f'<div class="content"><img src="{url}"></div>'), item(4, html=f'<div class="content"><div class="reply-content">����</div><img src="{url}"></div>'), item(5, uid='u_two'), item(6)]
+        items = [item(1), item(2, html='<div class="content"><div class="reply-content">引用</div>回复</div>'), item(3, html=f'<div class="content"><img src="{url}"></div>'), item(4, html=f'<div class="content"><div class="reply-content">引用</div><img src="{url}"></div>'), item(5, uid='u_two'), item(6)]
         chosen = select_samples(items)
         self.assertEqual(len(chosen), 5)
         self.assertEqual(len({category(i) for i in chosen}), 4)

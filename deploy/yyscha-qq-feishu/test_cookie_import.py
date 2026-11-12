@@ -36,7 +36,7 @@ class CookieImportTest(unittest.TestCase):
         self.assertEqual(self.parse('www.yyscha.cn\tFALSE\t/application/QQ/api.php\tTRUE\t0\tflag\t')[0], 'flag=')
 
     def test_decimal_expiry_and_session_markers(self):
-        for expiry in ['200.75', '1.8e9', '', 'Session', 'session', 'null', 'undefined', '�Ự', '-1', '0.0']:
+        for expiry in ['200.75', '1.8e9', '', 'Session', 'session', 'null', 'undefined', '会话', '-1', '0.0']:
             with self.subTest(expiry=expiry):
                 self.assertEqual(self.parse(f'www.yyscha.cn\tFALSE\t/\tTRUE\t{expiry}\tsession\tlocal')[0], 'session=local')
         with self.assertRaises(ValueError):
@@ -54,7 +54,7 @@ class CookieImportTest(unittest.TestCase):
     def test_diagnostic_has_line_number_without_values(self):
         with self.assertRaises(ValueError) as error:
             self.parse('# header\nwww.yyscha.cn\tFALSE\t/\tTRUE\tprivate-unknown\tsession\tprivate-cookie')
-        self.assertIn('��2��', str(error.exception))
+        self.assertIn('第2行', str(error.exception))
         self.assertNotIn('private-', str(error.exception))
 
 

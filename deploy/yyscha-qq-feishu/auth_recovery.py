@@ -30,7 +30,7 @@ def promote_session(config_path, candidate):
     path = Path(config_path)
     raw = candidate.cookie_header()
     if not raw:
-        raise r.Failure('��֤��ĻỰû�п�������Ϣ�ӿڵ�Cookie��δ�滻����')
+        raise r.Failure('验证后的会话没有可用于消息接口的Cookie，未替换配置')
     path.parent.mkdir(parents=True, exist_ok=True)
     destination = SiteSession(raw, path.parent / 'site-session.sqlite3')
     temp = path.with_suffix('.auth-new')
@@ -64,7 +64,7 @@ def import_cookie(config_path, raw_cookie):
     if raw_cookie.lower().startswith('cookie:'):
         raw_cookie = raw_cookie[7:].strip()
     if '=' not in raw_cookie or '\r' in raw_cookie or '\n' in raw_cookie:
-        raise r.Failure('Cookie��ʽ��Ч��ԭ����δ�޸�')
+        raise r.Failure('Cookie格式无效，原配置未修改')
     session = SiteSession(raw_cookie)  # Verify in isolation; failed imports do not touch the live jar.
     try:
         verify_session(config, session, raw_cookie)
@@ -91,28 +91,28 @@ class LoginFlow:
             with self.session.open(r.SITE + '/ailogin/modal.php') as response:
                 raw = response.read(512 * 1024 + 1)
             if len(raw) > 512 * 1024:
-                raise r.Failure('��¼��������')
+                raise r.Failure('登录表单过大')
             dom = r.DOM(raw.decode('utf-8')).root
             field = dom.find(lambda n: n.tag == 'input' and n.attrs.get('name') == 'csrf_token')
             self.csrf = field.attrs.get('value') if field else None
             if not self.csrf:
-                raise r.Failure('��¼����û��CSRF�ֶΣ���վ���̿����ѱ仯')
+                raise r.Failure('登录表单没有CSRF字段，网站流程可能已变化')
             with self.session.open(r.SITE + '/ailogin/captcha.php?t=' + str(int(time.time()))) as response:
                 data = response.read(512 * 1024 + 1)
             from media_feishu import image_mime
             mime = image_mime(data)
             if not mime or len(data) > 512 * 1024:
-                raise r.Failure('��֤��ӿ�δ����֧�ֵ�ͼƬ')
+                raise r.Failure('验证码接口未返回支持的图片')
             self.deadline = time.monotonic() + 300
             return data, mime
         except (HTTPError, URLError, TimeoutError, OSError, UnicodeError):
-            raise r.Failure('��ȡ��¼��������֤��ʧ�ܣ����Ժ�����') from None
+            raise r.Failure('获取登录表单或验证码失败，请稍后重试') from None
 
     def submit(self, username, password, captcha):
         if self.attempted or not self.csrf or time.monotonic() > self.deadline:
-            raise r.Failure('�������»�ȡ��֤�룬���ύ��¼')
+            raise r.Failure('请先重新获取验证码，再提交登录')
         if not username.strip() or not password or not captcha.strip():
-            raise r.Failure('����д�˺š������ͼ����֤��')
+            raise r.Failure('请填写账号、密码和图形验证码')
         self.attempted = True
         r.ensure_time(self.config)
         form = urlencode({'action': 'login', 'username': username.strip(), 'password': password,
@@ -124,11 +124,11 @@ class LoginFlow:
             with self.session.open(req) as response:
                 raw = response.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:
-                raise r.Failure('��¼��Ӧ����')
+                raise r.Failure('登录响应过大')
             result = json.loads(raw)
             if not isinstance(result, dict) or type(result.get('code')) is not int or result['code'] != 1:
-                raise r.Failure('��¼δͨ���������˺����벢���»�ȡ��֤�룻ԭ����δ�޸�')
+                raise r.Failure('登录未通过，请检查账号密码并重新获取验证码；原配置未修改')
             verify_session(self.config, self.session, '')
             promote_session(self.config_path, self.session)
         except (HTTPError, URLError, TimeoutError, OSError, ValueError):
-            raise r.Failure('��¼�������Ӧʧ�ܣ������»�ȡ��֤�룻ԭ����δ�޸�') from None
+            raise r.Failure('登录请求或响应失败，请重新获取验证码；原配置未修改') from None

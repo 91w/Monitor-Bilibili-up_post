@@ -14,7 +14,7 @@ DAY = '2026-11-12'
 
 
 def item(i, **kwargs):
-    return dict(id=f'msg-{i}', uid=UID, name='Ŀ��', ts=i * 1000, text=f'����{i}', **kwargs)
+    return dict(id=f'msg-{i}', uid=UID, name='目标', ts=i * 1000, text=f'正文{i}', **kwargs)
 
 
 class FakeSource:
@@ -25,7 +25,7 @@ class FakeSource:
     def page(self, day, uid, offset):
         self.calls.append((day, uid, offset))
         if self.fail == offset:
-            raise r.Failure('ģ�����')
+            raise r.Failure('模拟断网')
         items = self.days.get(day, [])
         return {'ok': True, 'day': {'key': day, 'chat_key': 'group'}, 'offset': offset, 'total': len(items), 'items': copy.deepcopy(items[offset:offset+60])}
 
@@ -75,7 +75,7 @@ class RelayTest(unittest.TestCase):
         self.source.days[DAY] = [item(1)]
         r.scan(self.db, self.source, DAY, UID)
         def fail(*_):
-            raise r.Failure('ģ�����ʧ��')
+            raise r.Failure('模拟飞书失败')
         with patch('relay.time.sleep'):
             r.drain(self.db, {}, fail, now=100)
         self.assertEqual(self.status('retry'), 1)
@@ -154,11 +154,11 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.status('baseline'), 100)
 
     def test_reply_body_mentions_and_media(self):
-        html = '''<div class="content"><div class="reply-content" data-reply-to="old"><div class="reply-content-header"><strong>��Ŀ��</strong></div><span class="reply-content-time">09:22</span><div class="reply-content-text">@Ŀ�� ����<img src="x" onerror="bad()"></div></div><span>@��Ŀ��</span><span class="text-content"> ��</span><img src="secret" alt="ͼ"><script>bad()</script></div>'''
+        html = '''<div class="content"><div class="reply-content" data-reply-to="old"><div class="reply-content-header"><strong>非目标</strong></div><span class="reply-content-time">09:22</span><div class="reply-content-text">@目标 问题<img src="x" onerror="bad()"></div></div><span>@非目标</span><span class="text-content"> 是</span><img src="secret" alt="图"><script>bad()</script></div>'''
         result = r.render(item(1, html=html), DAY)
-        self.assertIn('���� ��Ŀ��', result)
-        self.assertIn('�ظ���@��Ŀ�� ��[ͼƬ��ͼ]', result)
-        self.assertEqual(result.count('����'), 1)
+        self.assertIn('引用 非目标', result)
+        self.assertIn('回复：@非目标 是[图片：图]', result)
+        self.assertEqual(result.count('问题'), 1)
         self.assertNotIn('bad()', result)
         self.assertNotIn('secret', result)
 
@@ -179,15 +179,15 @@ class RelayTest(unittest.TestCase):
             self.assertEqual(headers, {'Cookie': 'session=local'})
 
     def test_feishu_business_success_required_and_signature(self):
-        config = {'feishu_webhook': 'local', 'feishu_secret': 'secret', 'feishu_keyword': '����'}
+        config = {'feishu_webhook': 'local', 'feishu_secret': 'secret', 'feishu_keyword': '提醒'}
         for response in [{}, {'code': 19024}, {'code': '0'}, {'code': False}]:
             with patch('relay.request_json', return_value=response), self.assertRaises(r.Failure):
-                r.feishu(config, '����')
+                r.feishu(config, '正文')
         with patch('relay.request_json', return_value={'code': 0}) as request, patch('relay.time.time', return_value=100):
-            r.feishu(config, '����')
+            r.feishu(config, '正文')
             payload = request.call_args.kwargs['payload']
             self.assertEqual(payload['sign'], r.feishu_signature('secret', 100))
-            self.assertIn('����', payload['content']['text'])
+            self.assertIn('提醒', payload['content']['text'])
 
     def test_config_rejects_foreign_webhook_and_header_injection(self):
         path = self.testdir / 'config.json'
@@ -213,7 +213,7 @@ class RelayTest(unittest.TestCase):
             r.poll(self.db, self.source, {'uids': [UID, r.UIDS[1]]}, self.now)
 
     def test_non_text_fallback_explains_media(self):
-        self.assertIn('ý��򸽼�', r.render(item(1, type='image'), DAY))
+        self.assertIn('媒体或附件', r.render(item(1, type='image'), DAY))
 
     def test_scanned_total_growth_waits_until_next_poll(self):
         self.source.days[DAY] = [item(i) for i in range(100)]
@@ -240,31 +240,31 @@ class RelayTest(unittest.TestCase):
             r.scan(self.db, self.source, DAY, UID)
 
     def test_long_feishu_text_is_bounded_and_link_kept(self):
-        body = '����' * 20000 + '\nhttps://www.yyscha.cn/application/QQ/day.php?day=' + DAY
+        body = '正文' * 20000 + '\nhttps://www.yyscha.cn/application/QQ/day.php?day=' + DAY
         with patch('relay.request_json', return_value={'code': 0}) as request:
             r.feishu({'feishu_webhook': 'local'}, body)
             text = request.call_args.kwargs['payload']['content']['text']
             self.assertLess(len(text.encode()), 16000)
-            self.assertIn('�ѽض�', text)
+            self.assertIn('已截断', text)
             self.assertTrue(text.endswith(DAY))
 
     def test_structured_quote_is_persisted_with_queue(self):
-        self.source.days[DAY] = [item(1, html='<div class="content"><div class="reply-content"><div class="reply-content-header"><strong>������</strong></div><div class="reply-content-text">ԭ��</div></div>�ظ�����</div>')]
+        self.source.days[DAY] = [item(1, html='<div class="content"><div class="reply-content"><div class="reply-content-header"><strong>其他人</strong></div><div class="reply-content-text">原话</div></div>回复正文</div>')]
         r.scan(self.db, self.source, DAY, UID)
         parts = json.loads(self.db.execute('SELECT parts_json FROM messages').fetchone()[0])
-        self.assertEqual(parts['quote']['author'], '������')
-        self.assertEqual(parts['quote']['text'], 'ԭ��')
-        self.assertEqual(parts['body'], '�ظ�����')
+        self.assertEqual(parts['quote']['author'], '其他人')
+        self.assertEqual(parts['quote']['text'], '原话')
+        self.assertEqual(parts['body'], '回复正文')
 
     def test_quoted_text_uses_card_sender_without_images(self):
-        self.source.days[DAY] = [item(1, html='<div class="content"><div class="reply-content"><div class="reply-content-text">ԭ��</div></div>�ظ�</div>')]
+        self.source.days[DAY] = [item(1, html='<div class="content"><div class="reply-content"><div class="reply-content-text">原话</div></div>回复</div>')]
         r.scan(self.db, self.source, DAY, UID)
         from unittest.mock import Mock
         client, sender = Mock(), Mock()
         with patch('relay.time.sleep'):
             r.drain(self.db, {}, sender=sender, image_client=client)
         sender.assert_not_called()
-        self.assertEqual(client.send.call_args.kwargs['parts']['quote']['text'], 'ԭ��')
+        self.assertEqual(client.send.call_args.kwargs['parts']['quote']['text'], '原话')
         self.assertEqual(self.status('sent'), 1)
 
 

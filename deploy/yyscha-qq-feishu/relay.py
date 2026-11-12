@@ -33,8 +33,8 @@ class NoRedirect(HTTPRedirectHandler):
         if isinstance(target, str):
             p = urlparse(target)
             if p.hostname in ('www.yyscha.cn', 'yyscha.cn') and ('/ailogin/' in p.path or 'login' in p.path.lower()):
-                raise AuthRequired('��վ��ת��¼ҳ�棬��򿪵�¼�ָ����')
-        raise Failure('HTTP�ض��������¼״̬���ַ')
+                raise AuthRequired('网站跳转登录页面，请打开登录恢复入口')
+        raise Failure('HTTP重定向：请检查登录状态或地址')
 
 
 def request_json(url, headers=None, payload=None, session=None):
@@ -43,26 +43,26 @@ def request_json(url, headers=None, payload=None, session=None):
     if data is not None:
         headers['Content-Type'] = 'application/json; charset=utf-8'
     try:
-        # �����ɼ�����ֱ�����ӷ���ˣ����̳���������ע���HTTP������
+        # 独立采集程序直接连接服务端，不继承启动环境注入的HTTP代理。
         opener = session if session is not None else build_opener(ProxyHandler({}), NoRedirect)
         with opener.open(Request(url, data=data, headers=headers), timeout=20) as response:
             raw = response.read(8 * 1024 * 1024 + 1)
         if len(raw) > 8 * 1024 * 1024:
-            raise Failure('��Ӧ����')
+            raise Failure('响应过大')
         result = json.loads(raw)
         if not isinstance(result, dict):
-            raise Failure('��Ӧ����JSON����')
+            raise Failure('响应不是JSON对象')
         return result
     except HTTPError as exc:
         if session is not None and exc.code in (401, 403):
-            raise AuthRequired('��վ�Ự��Ҫ������֤����򿪵�¼�ָ����') from None
-        raise Failure(f'HTTP {exc.code}��������硢��¼�����������') from None
+            raise AuthRequired('网站会话需要重新验证，请打开登录恢复入口') from None
+        raise Failure(f'HTTP {exc.code}：检查网络、登录或机器人配置') from None
     except (URLError, TimeoutError, OSError):
-        raise Failure('����ʧ�ܻ�ʱ���Ժ�����') from None
+        raise Failure('网络失败或超时，稍后重试') from None
     except (ValueError, UnicodeError):
         if session is not None and 'raw' in locals() and any(marker in raw.lower() for marker in (b'loginmodal', b'loginform', b'/ailogin/')):
-            raise AuthRequired('��վ���ص�¼ҳ�棬��򿪵�¼�ָ����') from None
-        raise Failure('��Ӧ������ЧJSON�����ܵ�¼�ѹ���') from None
+            raise AuthRequired('网站返回登录页面，请打开登录恢复入口') from None
+        raise Failure('响应不是有效JSON，可能登录已过期') from None
 
 
 class Node:
@@ -87,17 +87,17 @@ class Node:
             return ''
         if self.tag == 'img':
             if self.has('face-emoji') or self.has('face-emoji-image'):
-                return self.attrs.get('alt') or '[QQ����]'
+                return self.attrs.get('alt') or '[QQ表情]'
             if self.has('avatar') or urlparse(self.attrs.get('src', '')).hostname == 'q.qlogo.cn':
                 return ''
-            return '[ͼƬ' + (('��' + self.attrs['alt']) if self.attrs.get('alt') else '') + ']'
+            return '[图片' + (('：' + self.attrs['alt']) if self.attrs.get('alt') else '') + ']'
         if self.tag in ('video', 'audio'):
-            return '[ý��]'
+            return '[媒体]'
         if self.tag == 'br':
             return '\n'
         value = ''.join(c.plain(omit_reply) if isinstance(c, Node) else c for c in self.children)
         if self.tag == 'a' and not value.strip():
-            value = '[����������]'
+            value = '[附件或链接]'
         return value + ('\n' if self.tag in ('div', 'p', 'li') else '')
 
 
@@ -134,11 +134,11 @@ def message_parts(item, day):
     reply = root.find(lambda n: n.has('reply-content'))
     body = content.plain(omit_reply=True).strip()
     if not item.get('html'):
-        body = str(item.get('text') or '[�����Ļ�δ֧�ֵ�ý��]')
+        body = str(item.get('text') or '[无正文或未支持的媒体]')
     if not body:
-        body = '[���������Ļ�δ֧�ֵ�ý��]'
-    if item.get('type') not in (None, '', 'text') and '[ͼƬ' not in body and '[ý��]' not in body:
-        body += '\n[�Ǵ�������Ϣ��ý��򸽼����ԭҳ��鿴]'
+        body = '[无文字正文或未支持的媒体]'
+    if item.get('type') not in (None, '', 'text') and '[图片' not in body and '[媒体]' not in body:
+        body += '\n[非纯文字消息；媒体或附件请打开原页面查看]'
     try:
         stamp = datetime.fromtimestamp(float(item['ts']) / 1000, TZ).strftime('%m-%d %H:%M:%S')
     except (KeyError, ValueError, TypeError, OverflowError, OSError):
@@ -149,10 +149,10 @@ def message_parts(item, day):
         author = header.find(lambda n: n.tag == 'strong') if header else None
         when = reply.find(lambda n: n.has('reply-content-time'))
         quote = reply.find(lambda n: n.has('reply-content-text'))
-        quote_data = {'author': author.plain().strip() if author else 'δ֪',
+        quote_data = {'author': author.plain().strip() if author else '未知',
                       'time': when.plain().strip() if when else '',
-                      'text': quote.plain().strip() if quote else '[����չʾ������]'}
-    return {'header': f"{item.get('name', item['uid'])} �� {stamp}", 'quote': quote_data,
+                      'text': quote.plain().strip() if quote else '[引用展示不可用]'}
+    return {'header': f"{item.get('name', item['uid'])} · {stamp}", 'quote': quote_data,
             'body': body, 'link': f'{SITE}/application/QQ/day.php?' + urlencode({'day': day})}
 
 
@@ -161,9 +161,9 @@ def render(item, day):
     parts = [message['header']]
     quote = message['quote']
     if quote:
-        parts += [f"���� {quote['author']} �� {quote['time'] or 'ʱ��δ֪'}��",
-                  '��' + quote['text'] + '��',
-                  '������Ϊ��ҳչʾ�����ܽضϣ����������ļ�ԭҳ�棩', '', '�ظ���' + message['body']]
+        parts += [f"引用 {quote['author']} · {quote['time'] or '时间未知'}：",
+                  '「' + quote['text'] + '」',
+                  '（引用为网页展示，可能截断；完整上下文见原页面）', '', '回复：' + message['body']]
     else:
         parts.append(message['body'])
     parts.append(message['link'])
@@ -180,19 +180,19 @@ class Source:
         data = request_json(url, {'Cookie': self.config['site_cookie']}, session=get_session(self.config))
         if data.get('ok') is not True or not isinstance(data.get('items'), list):
             hint = str(data.get('msg') or data.get('message') or '').lower()
-            if data.get('code') in (401, 403) or any(word in hint for word in ('��¼', 'login', 'session', 'δ��Ȩ')):
-                raise AuthRequired('��վ��¼��ʧЧ����򿪵�¼�ָ���ڣ����ȺͶ����ѱ���')
-            raise Failure('��Ϣҵ��ʧ�ܣ����Cookie���¼״̬')
+            if data.get('code') in (401, 403) or any(word in hint for word in ('登录', 'login', 'session', '未授权')):
+                raise AuthRequired('网站登录已失效，请打开登录恢复入口；进度和队列已保留')
+            raise Failure('消息业务失败：检查Cookie或登录状态')
         if not isinstance(data.get('day'), dict) or data['day'].get('key') != day or not data['day'].get('chat_key'):
-            raise Failure('���ڻ����췶Χȱʧ/������ֹͣ�ƽ��α�')
+            raise Failure('日期或聊天范围缺失/不符，停止推进游标')
         for key in ('offset', 'total'):
             if type(data.get(key)) is not int or data[key] < 0:
-                raise Failure('��ҳ�ֶ���Ч')
+                raise Failure('分页字段无效')
         if data['offset'] != offset:
-            raise Failure('��ͨ��ҳoffset������ֹͣ�ƽ��α�')
+            raise Failure('普通分页offset不符，停止推进游标')
         for item in data['items']:
             if not isinstance(item, dict) or item.get('uid') != uid or not isinstance(item.get('id'), str) or not item['id']:
-                raise Failure('��ϢIDȱʧ��UIDɸѡ����')
+                raise Failure('消息ID缺失或UID筛选不符')
         return data
 
 
@@ -222,24 +222,24 @@ def scan(db, source, day, uid, baseline=False, now=None):
     head = source.page(day, uid, 0)
     scope = SITE + '/' + str(head['day']['chat_key'])
     if stream and stream[0] != scope:
-        raise Failure('���췶Χ�仯��ֹͣ��ȡ')
+        raise Failure('聊天范围变化，停止读取')
     full = not stream or now - stream[2] >= 3600 or head['total'] < stream[1]
     start = 0 if full else max(0, min(stream[1], head['total']) - 60)
     offset, items, pages = start, [], 0
-    target = head['total']  # �̶����ֿ��ձ߽磻��ѯ�ڼ�����������һ�֣�����׷����������
+    target = head['total']  # 固定本轮快照边界；轮询期间新增留到下一轮，避免追赶无限流。
     while offset < target:
         page = head if offset == 0 else source.page(day, uid, offset)
         if SITE + '/' + str(page['day']['chat_key']) != scope or page['total'] < target:
-            raise Failure('ɨ��������������仯��������')
+            raise Failure('扫描中聊天或总数变化，请重试')
         batch = page['items']
         if not batch:
-            raise Failure('��ҳ��ǰΪ�գ�����ԭ�α�ȴ�����')
+            raise Failure('分页提前为空，保留原游标等待重试')
         items.extend(batch[:target - offset])
         offset += len(batch)
         pages += 1
         if pages > 10000:
-            raise Failure('��ҳ���࣬����ԭ�α�')
-    # ֻ������ҳ�ɹ��󣬻���/����/�α�һ���ύ��
+            raise Failure('分页过多，保留原游标')
+    # 只有所有页成功后，基线/队列/游标一起提交。
     from media_feishu import extract_images
     with db:
         for item in items:
@@ -259,23 +259,23 @@ def ensure_time(config):
         try:
             require_trusted_time()
         except (TimeTrustError, AttributeError):
-            raise Failure('�ȴ�H616����NTP����ʱ���¼���ݻ���ȡ�ͷ���') from None
+            raise Failure('等待H616现有NTP可信时间记录，暂缓读取和发送') from None
 
 
 def poll(db, source, config, now=None):
     ensure_time(config)
     now = now or datetime.now(TZ)
     day = now.date()
-    # ���ñ仯Ӧ��ȷ���½������ߣ�����ĬĬ������UID����ʷ��
+    # 配置变化应明确重新建立基线，不能默默补发新UID的历史。
     fingerprint = json.dumps(sorted(config['uids']))
     saved_uids = db.execute("SELECT value FROM meta WHERE key='uids'").fetchone()
     if saved_uids and saved_uids[0] != fingerprint:
-        raise Failure('�������������ݿⲻ������Ϊ������ʹ�ö������ݿ⽨������')
+        raise Failure('监听名单与数据库不符，请为新名单使用独立数据库建立基线')
     with db:
         db.execute("INSERT OR IGNORE INTO meta VALUES('uids',?)", (fingerprint,))
     initialized = db.execute("SELECT value FROM meta WHERE key='initialized'").fetchone()
     if not initialized:
-        # ���ֳ�ʼ��ʧ������ʱ���԰����ߴ����������Ѿ���Ϣ��Ϊ�����͡�
+        # 部分初始化失败重启时，仍按基线处理，绝不把旧消息变为待发送。
         for d in (day - timedelta(days=1), day):
             for uid in config['uids']:
                 scan(db, source, d.isoformat(), uid, baseline=True)
@@ -300,14 +300,14 @@ def feishu(config, body):
     text = (config.get('feishu_keyword', '') + '\n' + body).strip()
     if len(text.encode()) > 16000:
         link = body.splitlines()[-1]
-        text = text.encode()[:14000].decode('utf-8', errors='ignore') + '\n[���ݹ������ѽض�]\n' + link
+        text = text.encode()[:14000].decode('utf-8', errors='ignore') + '\n[内容过长，已截断]\n' + link
     payload = {'msg_type': 'text', 'content': {'text': text}}
     if config.get('feishu_secret'):
         stamp = str(int(time.time()))
         payload.update(timestamp=stamp, sign=feishu_signature(config['feishu_secret'], int(stamp)))
     result = request_json(config['feishu_webhook'], payload=payload)
     if type(result.get('code')) is not int or result['code'] != 0:
-        raise Failure('����ҵ��ʧ�ܣ��������˰�ȫ���á��ؼ�����ǩ��')
+        raise Failure('飞书业务失败：检查机器人安全设置、关键词与签名')
 
 
 def drain(db, config, sender=feishu, now=None, image_client=None):
@@ -331,32 +331,32 @@ def drain(db, config, sender=feishu, now=None, image_client=None):
         except Failure as exc:
             with db:
                 db.execute("UPDATE messages SET status='retry',attempts=?,next_try=?,error=? WHERE scope=? AND id=?", (attempts + 1, now + min(3600, 15 * 2 ** min(attempts, 8)), str(exc), scope, mid))
-            logging.error('%s����Ϣ�ѱ����ȴ�����', exc)
+            logging.error('%s；消息已保留等待重试', exc)
         else:
             with db:
                 db.execute("UPDATE messages SET status='sent',error=NULL WHERE scope=? AND id=?", (scope, mid))
-        time.sleep(1)  # ����ͻ������������������ˡ�
+        time.sleep(1)  # 避免突发队列连续请求机器人。
 
 
 def load_config(path, allow_missing_cookie=False):
     try:
         config = json.loads(Path(path).read_text(encoding='utf-8-sig'))
     except (OSError, ValueError):
-        raise Failure('˽������δ��������Ч�������������ù���') from None
+        raise Failure('私密配置未创建或无效，请先运行设置工具') from None
     if not isinstance(config, dict):
-        raise Failure('���ø�ʽ��Ч')
+        raise Failure('配置格式无效')
     cookie = config.get('site_cookie', '')
     if not isinstance(cookie, str) or ('=' not in cookie and not (allow_missing_cookie and not cookie)) or '\n' in cookie or '\r' in cookie:
-        raise Failure('����д��ЧCookie')
+        raise Failure('请填写有效Cookie')
     uids = config.get('uids')
     if not isinstance(uids, list) or not uids or any(not isinstance(x, str) or not x.startswith('u_') for x in uids) or len(set(uids)) != len(uids):
-        raise Failure('����UID�б���Ч���ظ�')
+        raise Failure('监听UID列表无效或重复')
     webhook = config.get('feishu_webhook', '')
     p = urlparse(webhook)
     if webhook and (p.scheme != 'https' or p.netloc != 'open.feishu.cn' or not p.path.startswith('/open-apis/bot/v2/hook/') or p.query or p.fragment):
-        raise Failure('����Webhook��ַ��Ч')
+        raise Failure('飞书Webhook地址无效')
     if not isinstance(config.get('interval_seconds', 15), (int, float)) or config.get('interval_seconds', 15) < 15:
-        raise Failure('��ѯ�������15��')
+        raise Failure('轮询间隔至少15秒')
     config['_config_path'] = str(Path(path).resolve())
     return config
 
@@ -367,53 +367,53 @@ def main():
     parser.add_argument('--config', type=Path, default=PRIVATE / 'config.json')
     parser.add_argument('--db', type=Path, default=PRIVATE / 'state.sqlite3')
     parser.add_argument('--day', default=datetime.now(TZ).date().isoformat())
-    parser.add_argument('--send', action='store_true', help='��ȷ���÷��鷢�ͣ�����ֻ���')
+    parser.add_argument('--send', action='store_true', help='明确启用飞书发送；否则只入队')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     if args.command == 'status':
         db = connect(args.db)
         print(dict(db.execute('SELECT status,count(*) FROM messages GROUP BY status')))
-        print('�ȴ����ԣ�', db.execute("SELECT count(*) FROM messages WHERE status='retry'").fetchone()[0])
+        print('等待重试：', db.execute("SELECT count(*) FROM messages WHERE status='retry'").fetchone()[0])
         return
     config = load_config(args.config)
     if args.command == 'session-status':
         from site_session import get_session
         status = get_session(config).status()
-        print('�����ó־ûỰ��', status['persistent'], 'Cookie������', status['cookie_count'])
-        print('����ס��¼ƾ�ݣ�', status['remember_present'])
-        print('��������֪����ʱ�䣨����ʱ�䣩��', [datetime.fromtimestamp(t, TZ).isoformat(timespec='seconds') for t in status['expiry_timestamps']])
-        print('δ�ṩ��Ч�ڵĵ���Cookie����ͻ��˵���ʱ��δ֪���������Կ�����ǰ�����Ự��')
+        print('已启用持久会话：', status['persistent'], 'Cookie数量：', status['cookie_count'])
+        print('含记住登录凭据：', status['remember_present'])
+        print('服务器已知到期时间（北京时间）：', [datetime.fromtimestamp(t, TZ).isoformat(timespec='seconds') for t in status['expiry_timestamps']])
+        print('未提供有效期的导入Cookie，其客户端到期时间未知；服务器仍可能提前撤销会话。')
         return
     source = Source(config)
     if args.command == 'test-send':
         if not config.get('feishu_webhook'):
-            raise Failure('���Է���ǰ�����÷���Webhook')
-        feishu(config, 'yyscha ��ҳת�����Ӳ���\n���� ʾ���û���\n������һ��ģ�����á�\n\n�ظ�������ģ��ظ�������ʵ������Ϣ��\n[ͼƬ��ý����ʾʾ��]\n' + SITE + '/application/QQ/')
-        print('����ҵ��code=0�����ڽ���Ⱥ�˶Բ������֡�������ý����ʾ��')
+            raise Failure('测试发送前请配置飞书Webhook')
+        feishu(config, 'yyscha 网页转发连接测试\n引用 示例用户：\n「这是一条模拟引用」\n\n回复：这是模拟回复，非真实聊天消息。\n[图片：媒体提示示例]\n' + SITE + '/application/QQ/')
+        print('飞书业务code=0，请在接收群核对测试文字、引用与媒体提示。')
         return
     if args.command in ('check', 'preview'):
         ensure_time(config)
         for uid in config['uids']:
             data = source.page(args.day, uid, 0)
-            print(f"{uid}: ҵ��ɹ���total={data['total']}����ҳUID����ͨ��")
+            print(f"{uid}: 业务成功，total={data['total']}，本页UID核验通过")
             if not data['items']:
-                print('��ҳΪ�գ�������������֤��UID������ --day ָ������Ϣ������')
+                print('本页为空，尚无样本可验证该UID；可用 --day 指定有消息的日期')
             if args.command == 'preview':
                 for item in data['items'][-3:]:
                     print(render(item, args.day), '\n')
         return
     if args.send and not config.get('feishu_webhook'):
-        raise Failure('����ǰ�����÷���Webhook')
+        raise Failure('发送前请配置飞书Webhook')
     db = connect(args.db)
     from media_feishu import ImageClient
     image_client = ImageClient(config, db) if args.send else None
-    # ������������ռ�ö�ռ����������������ͬʱ����ͬһ���С�
+    # 整个生命周期占用独占锁，避免两个进程同时发送同一队列。
     lock = sqlite3.connect(str(args.db) + '.lock', timeout=0)
     lock.execute('CREATE TABLE IF NOT EXISTS guard(id INTEGER)')
     try:
         lock.execute('BEGIN EXCLUSIVE')
     except sqlite3.OperationalError:
-        raise Failure('ͬһ���ݿ�ļ��������Ѿ�����') from None
+        raise Failure('同一数据库的监听程序已经运行') from None
     try:
         while True:
             started = time.monotonic()
@@ -425,7 +425,7 @@ def main():
                 if changed_app and args.send:
                     image_client = ImageClient(config, db)
                 poll(db, source, config)
-                logging.info('��ѯ��ɣ�����״̬ %s', dict(db.execute('SELECT status,count(*) FROM messages GROUP BY status')))
+                logging.info('轮询完成；队列状态 %s', dict(db.execute('SELECT status,count(*) FROM messages GROUP BY status')))
             except AuthRequired as exc:
                 failed = True
                 logging.error('%s', exc)
@@ -434,20 +434,20 @@ def main():
                 last = db.execute("SELECT value FROM meta WHERE key='auth_alert_at'").fetchone()
                 if args.send and (not last or time.time() - float(last[0]) >= 6 * 3600):
                     try:
-                        feishu(config, '��ҳ������¼ʧЧ\n�ɼ��ѵȴ��ָ������ߺͶ��б�����\n��򿪱����򿪷���ĵ�¼�ָ���ڣ����µ�¼����Cookie��������Զ����¶�ȡ���á�')
+                        feishu(config, '网页监听登录失效\n采集已等待恢复，基线和队列保留。\n请打开本机或开发板的登录恢复入口，重新登录或导入Cookie；程序会自动重新读取配置。')
                     except Failure:
-                        logging.error('��¼ʧЧ���ѷ���ʧ�ܣ���������')
+                        logging.error('登录失效提醒发送失败，下轮重试')
                     else:
                         with db:
                             db.execute("INSERT OR REPLACE INTO meta VALUES('auth_alert_at',?)", (str(time.time()),))
             except Failure as exc:
                 failed = True
-                logging.error('%s�������α꣬��������', exc)
+                logging.error('%s；保留游标，下轮重试', exc)
             if args.send:
                 drain(db, config, image_client=image_client)
             if args.command == 'once':
                 if failed:
-                    raise Failure('���ֶ�ȡʧ�ܣ�δ���ȫ��ɨ��')
+                    raise Failure('本轮读取失败，未完成全部扫描')
                 break
             time.sleep(max(0, config.get('interval_seconds', 15) - (time.monotonic() - started)))
     finally:
@@ -459,10 +459,10 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        print('��ֹͣ�����кͻ����ѱ���')
+        print('已停止，队列和基线已保留')
     except Failure as exc:
         logging.error('%s', exc)
         raise SystemExit(1)
     except Exception:
-        logging.error('�������á����������ݿ��쳣����ֹͣ��������������̣����Զ����ԭʼ��Ӧ��ƾ�ݡ�')
+        logging.error('本地配置、解析或数据库异常；已停止。请检查配置与磁盘，不自动输出原始响应或凭据。')
         raise SystemExit(1)

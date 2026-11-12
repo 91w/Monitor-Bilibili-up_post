@@ -80,7 +80,7 @@ class SiteSession:
         req = Request(request) if isinstance(request, str) else request
         target = urlparse(req.full_url)
         if target.scheme != 'https' or target.netloc != 'www.yyscha.cn':
-            raise r.Failure('�Ự�������ָ������Ȩ��yyscha HTTPSվ��')
+            raise r.Failure('会话请求必须指向已授权的yyscha HTTPS站点')
         # Serialize the load/request/save sequence so concurrent reader/recovery
         # processes cannot overwrite a newly rotated session with an older copy.
         self.db.execute('BEGIN IMMEDIATE')

@@ -18,7 +18,7 @@ import relay
 def main():
     config = relay.load_config(BASE / 'data/config.json')
     if config.get('require_trusted_time') is not True:
-        raise relay.Failure('H616���ñ��뿪��require_trusted_time')
+        raise relay.Failure('H616配置必须开启require_trusted_time')
     secrets = [config.get(k, '') for k in ('site_cookie', 'feishu_webhook', 'feishu_secret', 'feishu_app_secret')]
     secrets += [x.split('=', 1)[1].strip() for x in config['site_cookie'].split(';') if '=' in x]
 
@@ -47,5 +47,5 @@ if __name__ == '__main__':
         logging.error('%s', exc)
         sys.exit(1)
     except Exception:
-        logging.error('���񱾵��쳣���ȴ��ػ�������δ���ԭʼ�쳣��ƾ��')
+        logging.error('服务本地异常，等待守护重启；未输出原始异常和凭据')
         sys.exit(1)

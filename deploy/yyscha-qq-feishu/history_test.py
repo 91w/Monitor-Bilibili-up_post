@@ -15,11 +15,11 @@ def fetch_day(source, day, uid):
         if offset:
             page = source.page(day, uid, offset)
         if page['total'] < total or page['day']['chat_key'] != scope or not page['items']:
-            raise r.Failure('��ʷ������ҳ�仯����ǰΪ�գ����Ժ�����')
+            raise r.Failure('历史样本分页变化或提前为空，请稍后重试')
         items.extend(page['items'][:total - offset])
         offset += len(page['items'])
         if offset < total and offset > 600000:
-            raise r.Failure('��ʷ������ҳ����')
+            raise r.Failure('历史样本分页过多')
     return items
 
 
@@ -29,7 +29,7 @@ def category(item):
     from media_feishu import extract_images
     content = root.find(lambda n: n.has('content')) or root
     media = bool(extract_images(item)) or content.find(lambda n: n.tag in ('video', 'audio')) is not None or item.get('type') not in (None, '', 'text')
-    return ('���ûظ�' if reply else '��ͨ��Ϣ') + ('��ý����ʾ' if media else '������')
+    return ('引用回复' if reply else '普通消息') + ('＋媒体提示' if media else '＋文字')
 
 
 def select_samples(items, limit=5):
@@ -38,7 +38,7 @@ def select_samples(items, limit=5):
         if item['id'] not in ids and len(chosen) < limit:
             chosen.append(item)
             ids.add(item['id'])
-    for kind in ['��ͨ��Ϣ������', '���ûظ�������', '��ͨ��Ϣ��ý����ʾ', '���ûظ���ý����ʾ']:
+    for kind in ['普通消息＋文字', '引用回复＋文字', '普通消息＋媒体提示', '引用回复＋媒体提示']:
         sample = next((i for i in items if category(i) == kind), None)
         if sample:
             add(sample)
@@ -58,25 +58,25 @@ def main():
     parser.add_argument('--config', type=Path, default=r.PRIVATE / 'config.json')
     parser.add_argument('--limit', type=int, default=5, choices=range(1, 6))
     parser.add_argument('--send', action='store_true')
-    parser.add_argument('--images-only', action='store_true', help='ֻѡ����ʵͼƬ����ʷ����')
-    parser.add_argument('--replies-only', action='store_true', help='ֻѡ�������õ���ʷ����')
+    parser.add_argument('--images-only', action='store_true', help='只选择含真实图片的历史样本')
+    parser.add_argument('--replies-only', action='store_true', help='只选择有引用的历史样本')
     args = parser.parse_args()
     try:
         day = datetime.strptime(args.day, '%Y-%m-%d').date()
     except ValueError:
-        raise r.Failure('���ڸ�ʽӦΪYYYY-MM-DD') from None
+        raise r.Failure('日期格式应为YYYY-MM-DD') from None
     if day >= datetime.now(r.TZ).date():
-        raise r.Failure('��ʷ��ʽ������ʹ���������������')
+        raise r.Failure('历史格式测试请使用昨天或更早的日期')
     config = r.load_config(args.config)
     r.ensure_time(config)
     if args.send and not config.get('feishu_webhook'):
-        raise r.Failure('��ʷ���Է���ǰ�����÷���Webhook')
+        raise r.Failure('历史测试发送前请配置飞书Webhook')
     source = r.Source(config)
     items = []
     for uid in config['uids']:
         batch = fetch_day(source, day.isoformat(), uid)
         items.extend(batch)
-        print(f'��ȡ {uid}��{len(batch)}������д����ʽ���ݿ�')
+        print(f'读取 {uid}：{len(batch)}条；不写入正式数据库')
     from media_feishu import extract_images, ImageClient
     if args.images_only:
         items = [item for item in items if extract_images(item)]
@@ -84,27 +84,27 @@ def main():
         items = [item for item in items if r.message_parts(item, day.isoformat()).get('quote')]
     samples = select_samples(items, args.limit)
     if not samples:
-        raise r.Failure('������û��Ŀ���û���Ϣ�ɲ���')
-    # ��ʷ���Խ�ʹ���ڴ��ϴ����棬������ʽ�������ݿ⡣
+        raise r.Failure('该日期没有目标用户消息可测试')
+    # 历史测试仅使用内存上传缓存，不打开正式监听数据库。
     import sqlite3
     image_db = sqlite3.connect(':memory:')
     image_client = ImageClient(config, image_db) if args.send else None
     for index, item in enumerate(samples, 1):
         kind = category(item)
-        body = f'����ʷ��ʽ���� {index}/{len(samples)}��\n���ڣ�{day.isoformat()} �� ������{kind}\n\n' + r.render(item, day.isoformat())
+        body = f'【历史格式测试 {index}/{len(samples)}】\n日期：{day.isoformat()} · 样本：{kind}\n\n' + r.render(item, day.isoformat())
         if args.send:
             images = extract_images(item)
             parts = r.message_parts(item, day.isoformat())
-            parts['test_label'] = f'����ʷ��ʽ���� {index}/{len(samples)}�� {day.isoformat()}'
+            parts['test_label'] = f'【历史格式测试 {index}/{len(samples)}】 {day.isoformat()}'
             if images or parts.get('quote'):
                 image_client.send(body, images, parts=parts)
             else:
                 r.feishu(config, body)
-            print(f'�ѷ��� {index}/{len(samples)}��{kind}������code=0')
+            print(f'已发送 {index}/{len(samples)}：{kind}；飞书code=0')
             time.sleep(1)
         else:
             print(body, '\n')
-    print('��ʽ�������ڡ���ʷ���ߡ������Ͷ��о�δ�޸ġ�')
+    print('正式监听日期、历史基线、待发送队列均未修改。')
     image_db.close()
 
 
@@ -115,7 +115,7 @@ if __name__ == '__main__':
         print(str(exc))
         raise SystemExit(1)
     except KeyboardInterrupt:
-        print('��ʷ������ֹͣ')
+        print('历史测试已停止')
     except Exception:
-        print('��ʷ���Է��������쳣����ֹͣ��δ���ԭʼ�쳣��ƾ�ݡ�')
+        print('历史测试发生本地异常，已停止；未输出原始异常或凭据。')
         raise SystemExit(1)

@@ -204,7 +204,7 @@ class AuthTest(unittest.TestCase):
 
     def test_auth_failure_is_distinct_from_general_business_error(self):
         source = r.Source(dict(self.base))
-        with patch('relay.request_json', return_value={'ok':False,'msg':'���ȵ�¼'}), self.assertRaises(r.AuthRequired):
+        with patch('relay.request_json', return_value={'ok':False,'msg':'请先登录'}), self.assertRaises(r.AuthRequired):
             source.page('2026-11-12', r.UIDS[0], 0)
         with patch('relay.request_json', return_value={'ok':False,'msg':'maintenance'}), self.assertRaises(r.Failure) as error:
             source.page('2026-11-12', r.UIDS[0], 0)
