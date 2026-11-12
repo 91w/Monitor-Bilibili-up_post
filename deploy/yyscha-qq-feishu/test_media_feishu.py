@@ -4,7 +4,7 @@ import sqlite3
 import unittest
 from unittest.mock import Mock, patch
 import relay as r
-from media_feishu import ImageClient, extract_images, image_url, image_mime, stable_ref, refresh_if_expired, card_elements
+from media_feishu import ImageClient, extract_images, image_url, image_mime, stable_ref, refresh_if_expired, card_elements, card_header
 
 URL = 'https://www.yyscha.cn/application/QQ/serve.php?record=one&path=pic.png&exp=9999999999&sig=temporary'
 
@@ -130,10 +130,11 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(inner[1]['text']['content'], '被引用原话')
         self.assertEqual(inner[2]['img_key'], 'q-key')
         self.assertNotIn('当前回复', json.dumps(box, ensure_ascii=False))
-        self.assertTrue(any(e.get('text', {}).get('content') == '回复\n当前回复' for e in elements))
+        self.assertTrue(any(e.get('text', {}).get('content') == '回复\n\n当前回复' for e in elements))
         self.assertTrue(any(e.get('img_key') == 'b-key' for e in elements))
         self.assertNotIn('时间未知', json.dumps(elements, ensure_ascii=False))
-        self.assertEqual(elements[-1]['text']['content'].split(']')[0], '[查看原聊天')
+        self.assertNotIn('查看原聊天', json.dumps(elements, ensure_ascii=False))
+        self.assertNotIn('/application/QQ/day.php', json.dumps(elements, ensure_ascii=False))
 
     def test_plain_user_content_is_not_interpreted_as_markdown(self):
         parts = {'header': '目标', 'quote': {'author': '另一位', 'text': '**原话** <at id=all>'}, 'body': '<font>回复</font>'}
@@ -148,7 +149,26 @@ class MediaTest(unittest.TestCase):
         with patch.object(client, 'upload') as upload, patch('relay.request_json', return_value={'code': 0}) as request:
             client.send('legacy', [], parts=parts)
         upload.assert_not_called()
-        self.assertEqual(request.call_args.kwargs['payload']['card']['elements'][1]['tag'], 'column_set')
+        self.assertEqual(request.call_args.kwargs['payload']['card']['elements'][0]['tag'], 'column_set')
+
+    def test_three_senders_have_stable_distinct_title_colors(self):
+        values = [card_header({'header': '名称 · 11-12 19:00', 'sender_uid': uid,
+                              'sender_name': '昵称可变', 'message_time': '11-12 19:00'}) for uid in r.UIDS]
+        self.assertEqual([value['template'] for value in values], ['blue', 'green', 'purple'])
+        self.assertTrue(all(value['title']['tag'] == 'plain_text' for value in values))
+        self.assertTrue(all(value['subtitle']['content'] == '11-12 19:00' for value in values))
+        self.assertEqual(card_header({'header': '示例用户三 · 11-12 19:00'})['template'], 'purple')
+
+    def test_plain_message_gets_native_title_without_duplicate_sender_line(self):
+        parts = {'header': '示例用户二 · 11-12 19:00', 'sender_uid': r.UIDS[1],
+                 'sender_name': '示例用户二', 'message_time': '11-12 19:00',
+                 'body': '**原文保留**', 'quote': None}
+        with patch('relay.request_json', return_value={'code': 0}) as request:
+            self.client.send('legacy-body', [], parts)
+        card = request.call_args.kwargs['payload']['card']
+        self.assertEqual(card['header']['template'], 'green')
+        self.assertEqual(card['elements'], [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': '**原文保留**'}}])
+        self.assertNotIn('查看原聊天', json.dumps(card, ensure_ascii=False))
 
     def test_qq_face_is_text_not_attachment(self):
         item = {'id': 'm', 'uid': 'u_one', 'html': '<div class="content">回复<img class="face-emoji face-emoji-image" src="https://koishi.js.org/QFace/assets/qq_emoji/13/apng/13.png" alt="/呲牙"></div>'}

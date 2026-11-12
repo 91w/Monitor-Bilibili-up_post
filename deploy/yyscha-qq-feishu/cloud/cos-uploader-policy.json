@@ -1,0 +1,33 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "name/cos:PutObject"
+      ],
+      "resource": [
+        "qcs::cos:ap-beijing:uid/1234567890:example-relay-1234567890/devices/h616-home-01/inbox/*"
+      ],
+      "condition": {
+        "bool_equal": {
+          "cos:secure-transport": "true"
+        }
+      }
+    },
+    {
+      "effect": "allow",
+      "action": [
+        "name/cos:GetObject"
+      ],
+      "resource": [
+        "qcs::cos:ap-beijing:uid/1234567890:example-relay-1234567890/devices/h616-home-01/receipts/*"
+      ],
+      "condition": {
+        "bool_equal": {
+          "cos:secure-transport": "true"
+        }
+      }
+    }
+  ]
+}

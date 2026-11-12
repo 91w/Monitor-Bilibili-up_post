@@ -29,6 +29,46 @@ document.getElementById('login').onsubmit=async e=>{e.preventDefault();try{await
 document.getElementById('import').onclick=async()=>{try{const file=document.getElementById('file').files[0];const cookie=document.getElementById('cookie').value.trim();if(cookie){await call('import',{cookie});}else if(file){if(file.size>5242880)throw Error('文件过大');const rows=(await file.text()).split(/\\r?\\n/).filter(line=>{const domain=line.replace(/^#HttpOnly_/,'').split('\\t')[0].replace(/^\\./,'').toLowerCase();return domain==='www.yyscha.cn'||domain==='yyscha.cn';});await call('import',{text:rows.join('\\n')});}else throw Error('请选择文件或粘贴Cookie');document.getElementById('cookie').value='';document.getElementById('file').value='';}catch(e){result.textContent=e.message;}};
 </script></html>'''
 
+RELAY_HTML = '''<section><h2>同步到家中开发板</h2><p>先完成上方登录或导入，再点击加密上传。上传完成后等待开发板验证；两种状态分别显示。</p><button id="relay-upload">验证并加密上传</button><button id="relay-status">查询／重试同步</button><div id="relay-result" role="status">尚未查询。</div></section>
+<script>
+async function relayCall(action){const box=document.getElementById('relay-result');box.textContent='处理中…';try{const d=await call(action,{});box.textContent=d.message;}catch(e){box.textContent=e.message;}}
+document.getElementById('relay-upload').onclick=()=>relayCall('relay-upload');
+document.getElementById('relay-status').onclick=()=>relayCall('relay-status');
+</script>'''
+
+
+def desktop_paired(config_path):
+    try:
+        root = Path(config_path).parent
+        return (json.loads((root / 'relay-identity.json').read_text())['role'] == 'desktop'
+                and (root / 'relay-peer.json').is_file() and (root / 'cos-uploader.json').is_file())
+    except Exception:
+        return False
+
+
+def relay_result(config_path, upload=False):
+    from relay_updates import DesktopUpdates, enqueue_current
+    from cos_transport import CloudError
+    if not desktop_paired(config_path):
+        raise r.Failure('本机尚未完成云端配置与开发板配对')
+    if upload:
+        state = enqueue_current(config_path)
+    else:
+        updates = DesktopUpdates(Path(config_path).parent)
+        try:
+            state = updates.synchronize()
+        except CloudError:
+            state = updates.status()
+            return '云端状态查询暂未完成；本机记录：' + str(state.get('state', 'unknown')) + '。请稍后重试。'
+        finally:
+            updates.close()
+    labels = {'empty': '尚无更新包', 'queued': '已加密保存在本机，等待重试上传',
+              'uploaded': '密文已上传，等待开发板验证与应用',
+              'applied': '开发板已确认验证并应用，会话已同步',
+              'rejected': '开发板拒绝此更新，旧会话和队列保留；请重新登录或导入后生成新包',
+              'expired': '未取得应用回执，传输有效期已过；实际板端状态需复核，请重新验证并上传'}
+    return labels.get(state['state'], '状态暂不可用') + (f"（版本 {state['version']}）" if 'version' in state else '')
+
 
 def make_handler(config_path, token):
     route = '/' + token + '/'
@@ -55,12 +95,13 @@ def make_handler(config_path, token):
             if not self.valid_host() or self.path != route:
                 self.respond(404, {'message': 'Not found'})
                 return
-            self.respond(200, HTML.encode(), 'text/html; charset=utf-8')
+            page = HTML.replace('</html>', RELAY_HTML + '</html>') if desktop_paired(config_path) else HTML
+            self.respond(200, page.encode(), 'text/html; charset=utf-8')
 
         def do_POST(self):
             expected = 'http://127.0.0.1:' + str(self.server.server_port)
             action = self.path[len(route):] if self.path.startswith(route) else ''
-            if not self.valid_host() or self.headers.get('Origin') != expected or action not in ('begin', 'login', 'import'):
+            if not self.valid_host() or self.headers.get('Origin') != expected or action not in ('begin', 'login', 'import', 'relay-upload', 'relay-status'):
                 self.respond(403, {'message': 'Forbidden'})
                 return
             try:
@@ -71,7 +112,9 @@ def make_handler(config_path, token):
                 payload = json.loads(self.rfile.read(length))
                 if not isinstance(payload, dict):
                     raise r.Failure('请求格式无效')
-                if action == 'begin':
+                if action in ('relay-upload', 'relay-status'):
+                    self.respond(200, {'message': relay_result(config_path, upload=action == 'relay-upload')})
+                elif action == 'begin':
                     if Handler.flow:
                         Handler.flow.close()
                     Handler.flow = LoginFlow(config_path)

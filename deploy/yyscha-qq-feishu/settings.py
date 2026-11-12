@@ -30,7 +30,7 @@ def main():
     form.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
     canvas.bind('<Configure>', lambda event: canvas.itemconfigure(window, width=event.width))
     root.bind('<MouseWheel>', lambda event: canvas.yview_scroll(-int(event.delta / 120), 'units'))
-    tk.Label(form, text='凭据只保存到 本机私密目录；保存不会发送或启动监听。', anchor='w').pack(fill='x')
+    tk.Label(form, text='凭据只保存到 work 私密目录；保存不会发送或启动监听。', anchor='w').pack(fill='x')
     fields = {}
     for key, label, secret in [('site_cookie', '网站请求头 Cookie（仅值）', True),
                                ('feishu_webhook', '独立飞书群机器人 Webhook（可稍后填）', True),
@@ -38,6 +38,7 @@ def main():
                                ('feishu_keyword', '飞书安全关键词（选填）', False),
                                ('feishu_app_id', '飞书配图应用 App ID（复用已发布应用）', False),
                                ('feishu_app_secret', '飞书配图应用 App Secret', True),
+                               ('feishu_chat_id', '文件接收群 chat_id（oc_ 开头；应用机器人须已入群）', False),
                                ('uids', '监听 UID（英文逗号分隔；已有基线后不要直接增删）', False)]:
         tk.Label(form, text=label).pack(anchor='w', pady=(16, 3))
         entry = tk.Entry(form, show='●' if secret else '', font=('', 11))
@@ -91,10 +92,10 @@ def main():
         except OSError:
             messagebox.showerror('未保存', '私密配置无法写入，请检查权限。')
             return
-        messagebox.showinfo('已保存', '配置保存在本机私密目录。下一步运行“02-检查读取.cmd”，随后本地预览。')
+        messagebox.showinfo('已保存', '配置保存在本机work目录。下一步运行“02-检查读取.cmd”，随后本地预览。')
         root.destroy()
 
-    tk.Label(form, text='默认名单：示例用户1、示例用户2、示例用户3，请填写自己的目标UID。\n可选择本地cookies.txt自动提取，或手动粘贴网站请求头Cookie。\n文件只在本机读取，无需上传聊天；导入后点击保存本地配置。', justify='left').pack(anchor='w', pady=18)
+    tk.Label(form, text='默认名单：示例用户一、示例用户二、示例用户三。\n可选择本地cookies.txt自动提取，或手动粘贴网站请求头Cookie。\n文件只在本机读取，无需上传聊天；导入后点击保存本地配置。', justify='left').pack(anchor='w', pady=18)
     tk.Button(form, text='保存本地配置', command=save, pady=8).pack(fill='x')
     root.mainloop()
 

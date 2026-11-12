@@ -1,0 +1,8 @@
+{
+  "Version": "1",
+  "Statement": [
+    {"Effect":"Deny","Action":["oss:*"],"Resource":["acs:oss:*:*:REPLACE_BUCKET","acs:oss:*:*:REPLACE_BUCKET/*"],"Condition":{"Bool":{"acs:SecureTransport":["false"]}}},
+    {"Effect":"Allow","Action":["oss:PutObject"],"Resource":["acs:oss:*:*:REPLACE_BUCKET/devices/REPLACE_DEVICE/inbox/*"]},
+    {"Effect":"Allow","Action":["oss:GetObject"],"Resource":["acs:oss:*:*:REPLACE_BUCKET/devices/REPLACE_DEVICE/receipts/*"]}
+  ]
+}

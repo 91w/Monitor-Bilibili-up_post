@@ -16,7 +16,7 @@ from feishu_transport import feishu_signature
 SITE = 'https://www.yyscha.cn'
 TZ = timezone(timedelta(hours=8))
 PRIVATE = Path(os.environ.get('YYSCHA_PRIVATE_DIR', str(Path.home() / '.yyscha-qq-feishu') if os.name == 'nt' else '/overlay/yyscha/data'))
-UIDS = ['u_example_1', 'u_example_2', 'u_example_3']
+UIDS = ['u_example_sender_1', 'u_example_sender_2', 'u_example_sender_3']
 
 
 class Failure(Exception):
@@ -95,6 +95,10 @@ class Node:
             return '[媒体]'
         if self.tag == 'br':
             return '\n'
+        if self.tag == 'a' and (self.has('message-file') or self.has('file-bubble')):
+            name = self.find(lambda n: n.has('fname') or n.has('file-name'))
+            if name:
+                return '[文件：' + name.plain().strip() + ']\n'
         value = ''.join(c.plain(omit_reply) if isinstance(c, Node) else c for c in self.children)
         if self.tag == 'a' and not value.strip():
             value = '[附件或链接]'
@@ -129,6 +133,8 @@ class DOM(HTMLParser):
 
 
 def message_parts(item, day):
+    from file_feishu import extract_files
+    files = extract_files(item)
     root = DOM(str(item.get('html') or '')).root
     content = root.find(lambda n: n.has('content')) or root
     reply = root.find(lambda n: n.has('reply-content'))
@@ -137,7 +143,7 @@ def message_parts(item, day):
         body = str(item.get('text') or '[无正文或未支持的媒体]')
     if not body:
         body = '[无文字正文或未支持的媒体]'
-    if item.get('type') not in (None, '', 'text') and '[图片' not in body and '[媒体]' not in body:
+    if item.get('type') not in (None, '', 'text') and '[图片' not in body and '[媒体]' not in body and not files:
         body += '\n[非纯文字消息；媒体或附件请打开原页面查看]'
     try:
         stamp = datetime.fromtimestamp(float(item['ts']) / 1000, TZ).strftime('%m-%d %H:%M:%S')
@@ -153,7 +159,9 @@ def message_parts(item, day):
                       'time': when.plain().strip() if when else '',
                       'text': quote.plain().strip() if quote else '[引用展示不可用]'}
     return {'header': f"{item.get('name', item['uid'])} · {stamp}", 'quote': quote_data,
-            'body': body, 'link': f'{SITE}/application/QQ/day.php?' + urlencode({'day': day})}
+            'body': body, 'link': f'{SITE}/application/QQ/day.php?' + urlencode({'day': day}),
+            'format_version': 2, 'sender_uid': item['uid'],
+            'sender_name': item.get('name', item['uid']), 'message_time': stamp, 'files': files}
 
 
 def render(item, day):
@@ -166,8 +174,16 @@ def render(item, day):
                   '（引用为网页展示，可能截断；完整上下文见原页面）', '', '回复：' + message['body']]
     else:
         parts.append(message['body'])
-    parts.append(message['link'])
     return '\n'.join(parts)
+
+
+def delivery_body(body, day, parts):
+    # Older queued rows contain an automatically appended source URL. Remove
+    # only that one trailing footer; preserve URLs authored in the actual chat.
+    footer = '\n' + SITE + '/application/QQ/day.php?' + urlencode({'day': day})
+    if parts.get('format_version', 0) < 2 and body.endswith(footer):
+        return body[:-len(footer)]
+    return body
 
 
 class Source:
@@ -299,8 +315,7 @@ def feishu(config, body):
     ensure_time(config)
     text = (config.get('feishu_keyword', '') + '\n' + body).strip()
     if len(text.encode()) > 16000:
-        link = body.splitlines()[-1]
-        text = text.encode()[:14000].decode('utf-8', errors='ignore') + '\n[内容过长，已截断]\n' + link
+        text = text.encode()[:14000].decode('utf-8', errors='ignore') + '\n[内容过长，已截断]'
     payload = {'msg_type': 'text', 'content': {'text': text}}
     if config.get('feishu_secret'):
         stamp = str(int(time.time()))
@@ -317,17 +332,38 @@ def drain(db, config, sender=feishu, now=None, image_client=None):
         try:
             media = json.loads(media_json)
             parts = json.loads(parts_json)
-            if media or parts.get('quote'):
+            body = delivery_body(body, day, parts)
+            files = parts.get('files') or []
+            file_client = None
+            if files:
+                from file_feishu import FileClient, refresh_files
+                from media_feishu import ImageClient
+                if image_client is None:
+                    image_client = ImageClient(config, db)
+                file_client = FileClient(config, db, image_client)
+                file_client.require_destination()
+                files = refresh_files(config, day, uid, mid, files)
+                parts['files'] = files
+                with db:
+                    db.execute('UPDATE messages SET parts_json=? WHERE scope=? AND id=?', (json.dumps(parts, ensure_ascii=False), scope, mid))
+                card_key = file_client.progress_key(scope, mid, 'card')
+            if media or parts.get('quote') or (parts.get('header') and (image_client is not None or sender is feishu)):
                 from media_feishu import ImageClient, refresh_if_expired
                 if image_client is None:
                     image_client = ImageClient(config, db)
-                fresh = refresh_if_expired(config, day, uid, mid, media) if media else []
-                if fresh != media:
-                    with db:
-                        db.execute('UPDATE messages SET media_json=? WHERE scope=? AND id=?', (json.dumps(fresh), scope, mid))
-                image_client.send(body, fresh, parts=parts)
+                if not file_client or not file_client.done(card_key):
+                    fresh = refresh_if_expired(config, day, uid, mid, media) if media else []
+                    if fresh != media:
+                        with db:
+                            db.execute('UPDATE messages SET media_json=? WHERE scope=? AND id=?', (json.dumps(fresh), scope, mid))
+                    image_client.send(body, fresh, parts=parts)
+                    if file_client:
+                        file_client.mark(card_key)
             else:
                 sender(config, body)
+            if file_client:
+                for attachment in files:
+                    file_client.send(scope, mid, attachment)
         except Failure as exc:
             with db:
                 db.execute("UPDATE messages SET status='retry',attempts=?,next_try=?,error=? WHERE scope=? AND id=?", (attempts + 1, now + min(3600, 15 * 2 ** min(attempts, 8)), str(exc), scope, mid))
@@ -369,6 +405,8 @@ def main():
     parser.add_argument('--day', default=datetime.now(TZ).date().isoformat())
     parser.add_argument('--send', action='store_true', help='明确启用飞书发送；否则只入队')
     args = parser.parse_args()
+    if args.send and os.name == 'nt' and (args.config.parent / 'sender-disabled').exists():
+        raise Failure('正式发送已转交开发板，本机发送入口已停用；请使用登录与加密同步入口')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     if args.command == 'status':
         db = connect(args.db)
@@ -425,10 +463,26 @@ def main():
                 if changed_app and args.send:
                     image_client = ImageClient(config, db)
                 poll(db, source, config)
+                prior_auth = db.execute("SELECT value FROM meta WHERE key='auth_required'").fetchone()
+                with db:
+                    db.execute("INSERT OR REPLACE INTO meta VALUES('auth_required','0')")
+                    if prior_auth and prior_auth[0] == '1':
+                        db.execute("INSERT OR REPLACE INTO meta VALUES('auth_recovery_pending','1')")
+                recovered = db.execute("SELECT value FROM meta WHERE key='auth_recovery_pending'").fetchone()
+                if args.send and recovered and recovered[0] == '1':
+                    try:
+                        feishu(config, '网页监听登录已恢复\n消息读取已通过验证，继续监听；原有基线和待发送队列保留。')
+                    except Failure:
+                        logging.error('登录恢复通知未完成，下轮重试')
+                    else:
+                        with db:
+                            db.execute("INSERT OR REPLACE INTO meta VALUES('auth_recovery_pending','0')")
                 logging.info('轮询完成；队列状态 %s', dict(db.execute('SELECT status,count(*) FROM messages GROUP BY status')))
             except AuthRequired as exc:
                 failed = True
                 logging.error('%s', exc)
+                with db:
+                    db.execute("INSERT OR REPLACE INTO meta VALUES('auth_required','1')")
                 # Throttle alerts persistently, and use the existing notification
                 # channel without sending passwords, cookie values or challenges.
                 last = db.execute("SELECT value FROM meta WHERE key='auth_alert_at'").fetchone()

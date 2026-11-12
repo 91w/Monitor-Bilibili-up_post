@@ -23,10 +23,11 @@ def verify_session(config, session, raw_cookie):
     day = r.datetime.now(r.TZ).date().isoformat()
     # A successful, source-validated message response is required, rather than
     # treating login JSON or an HTTP 200 page as sufficient evidence.
-    r.Source(candidate).page(day, config['uids'][0], 0)
+    for uid in config['uids']:
+        r.Source(candidate).page(day, uid, 0)
 
 
-def promote_session(config_path, candidate):
+def promote_session(config_path, candidate, relay_marker=None):
     path = Path(config_path)
     raw = candidate.cookie_header()
     if not raw:
@@ -38,6 +39,8 @@ def promote_session(config_path, candidate):
         destination.db.execute('BEGIN IMMEDIATE')
         current = json.loads(path.read_text(encoding='utf-8-sig'))
         current['site_cookie'] = raw
+        if relay_marker is not None:
+            current['relay_update'] = relay_marker
         # Hold the session DB lock through the atomic config replacement; a
         # concurrently polling process cannot reset the jar to the old seed.
         destination.db.execute('INSERT OR REPLACE INTO session VALUES(1,?,?,?)',
@@ -49,6 +52,12 @@ def promote_session(config_path, candidate):
         if os.name != 'nt':
             os.chmod(temp, 0o600)
         temp.replace(path)
+        if os.name != 'nt':
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         destination.db.commit()
     except Exception:
         destination.db.rollback()

@@ -1,0 +1,30 @@
+#!/bin/sh
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH TZ=CST-8
+SSL_CERT_FILE=/overlay/b-up-runtime/python/lib/python3.11/site-packages/certifi/cacert.pem
+export SSL_CERT_FILE
+umask 077
+BASE=/overlay/yyscha
+PY=/overlay/b-up-runtime/python/bin/python3
+PID=/var/run/yyscha-updater.pid
+exec 9>/var/run/yyscha-updater-service.lock
+flock -n 9 || exit 0
+child=
+cleanup() {
+    [ -z "$child" ] || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
+    rm -f "$PID"
+}
+trap 'exit 0' TERM INT
+trap cleanup EXIT
+while :; do
+    if [ ! -e "$BASE/data/enabled" ]; then sleep 5 9>&-; continue; fi
+    if [ ! -f "$BASE/data/cos-receiver.json" ] || [ ! -f "$BASE/data/relay-peer.json" ]; then sleep 15 9>&-; continue; fi
+    if ! "$PY" "$BASE/app/timeguard.py" >/dev/null 2>&1; then sleep 10 9>&-; continue; fi
+    "$PY" "$BASE/app/update_agent.py" board-run --private "$BASE/data" 9>&- >/dev/null 2>&1 &
+    child=$!
+    echo "$child" >"$PID"
+    wait "$child"
+    child=
+    rm -f "$PID"
+    sleep 15 9>&-
+done

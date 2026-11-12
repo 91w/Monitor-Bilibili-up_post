@@ -239,14 +239,48 @@ class RelayTest(unittest.TestCase):
         with self.assertRaises(r.Failure):
             r.scan(self.db, self.source, DAY, UID)
 
-    def test_long_feishu_text_is_bounded_and_link_kept(self):
+    def test_long_feishu_text_is_bounded_without_reappending_last_line(self):
         body = '正文' * 20000 + '\nhttps://www.yyscha.cn/application/QQ/day.php?day=' + DAY
         with patch('relay.request_json', return_value={'code': 0}) as request:
             r.feishu({'feishu_webhook': 'local'}, body)
             text = request.call_args.kwargs['payload']['content']['text']
             self.assertLess(len(text.encode()), 16000)
             self.assertIn('已截断', text)
-            self.assertTrue(text.endswith(DAY))
+            self.assertTrue(text.endswith('[内容过长，已截断]'))
+            self.assertNotIn('/application/QQ/day.php', text)
+
+    def test_render_does_not_append_source_url(self):
+        result = r.render(item(1, html='<div class="content">正常正文</div>'), DAY)
+        self.assertIn('正常正文', result)
+        self.assertNotIn('/application/QQ/day.php', result)
+
+    def test_plain_message_uses_card_when_production_image_client_present(self):
+        from unittest.mock import Mock
+        self.source.days[DAY] = [item(1)]
+        r.scan(self.db, self.source, DAY, UID)
+        client, sender = Mock(), Mock()
+        with patch('relay.time.sleep'):
+            r.drain(self.db, self.config, sender=sender, now=100, image_client=client)
+        sender.assert_not_called()
+        client.send.assert_called_once()
+        self.assertEqual(client.send.call_args.kwargs['parts']['sender_uid'], UID)
+        self.assertEqual(self.status('sent'), 1)
+
+    def test_user_authored_urls_are_preserved(self):
+        url = r.SITE + '/application/QQ/day.php?day=' + DAY
+        value = item(1, html='<div class="content">分享链接 ' + url + '</div>')
+        body = r.render(value, DAY)
+        self.assertEqual(body.count(url), 1)
+        self.assertEqual(r.delivery_body(body, DAY, r.message_parts(value, DAY)), body)
+
+    def test_legacy_footer_removal_keeps_user_original_url(self):
+        url = r.SITE + '/application/QQ/day.php?day=' + DAY
+        legacy = '标题\n正文原本分享 ' + url + '\n' + url
+        self.assertEqual(r.delivery_body(legacy, DAY, {}), '标题\n正文原本分享 ' + url)
+
+    def test_different_or_nontrailing_url_is_not_removed(self):
+        body = '分享 https://example.com/\n后续正文'
+        self.assertEqual(r.delivery_body(body, DAY, {}), body)
 
     def test_structured_quote_is_persisted_with_queue(self):
         self.source.days[DAY] = [item(1, html='<div class="content"><div class="reply-content"><div class="reply-content-header"><strong>其他人</strong></div><div class="reply-content-text">原话</div></div>回复正文</div>')]

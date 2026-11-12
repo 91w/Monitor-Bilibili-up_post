@@ -22,7 +22,7 @@ case "${1:-status}" in
         printf '%s\n' "$mode" >"$BASE/data/run-mode"
         touch "$BASE/data/enabled"
         stop_child
-        nohup sh "$BASE/app/yyscha-service" </dev/null >/dev/null 2>&1 &
+        /overlay/b-up-runtime/python/bin/python3 -c 'import subprocess; [subprocess.Popen(["sh", "/overlay/yyscha/app/"+name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True) for name in ("yyscha-service", "yyscha-update-service")]'
         echo "Enabled mode=$mode; waiting for trusted time."
         ;;
     stop)
@@ -41,5 +41,6 @@ case "${1:-status}" in
     logs) tail -30 "$BASE/logs/relay.log" ;;
     recover) exec /overlay/b-up-runtime/python/bin/python3 "$BASE/app/recovery_web.py" ;;
     session) exec /overlay/b-up-runtime/python/bin/python3 "$BASE/app/relay.py" session-status ;;
-    *) echo 'Usage: yyschactl {start|collect|stop|status|logs|recover|session}'; exit 2 ;;
+    updates) tail -30 "$BASE/logs/updates.log" ;;
+    *) echo 'Usage: yyschactl {start|collect|stop|status|logs|recover|session|updates}'; exit 2 ;;
 esac

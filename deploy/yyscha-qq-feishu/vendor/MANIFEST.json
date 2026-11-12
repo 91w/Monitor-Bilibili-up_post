@@ -1,0 +1,15 @@
+{
+  "libsodium_version": "1.0.22",
+  "libnacl_version": "2.1.0",
+  "libsodium_source": "https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz",
+  "libsodium_source_sha256": "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349",
+  "libnacl_wheel_sha256": "a8546b221afe8b72b6a9f298cd92a4c1f90570d7b5baa295acb1913644e230a5",
+  "compiler": "zig 0.15.2 (PyPI ziglang wheel; SHA256 verified against PyPI metadata)",
+  "build_common": "-Doptimize=ReleaseSafe -Dstatic=false -Dshared=true -Dtest=false",
+  "arm_target": "arm-linux-gnueabihf.2.23 -Dcpu=cortex_a53",
+  "windows_target": "x86_64-windows-gnu",
+  "binary_sha256": {
+    "libsodium.so": "a64bc0ed0fa57e5d2edc55bceb0a3496555dd6019829b776191afc00b8f354ea",
+    "libsodium.dll": "b617f76ffb82962d0c3fc1ae6b5e1216bebd9366969bbcf26238bd698d18cb92"
+  }
+}

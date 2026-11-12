@@ -1,87 +1,45 @@
 # yyscha 指定用户消息 → 飞书
 
-读取用户已获授权的 yyscha 网页聊天记录，按当前发言者 UID 筛选新消息，分离引用与回复，转发文字和图片到飞书群。它读取网站记录，时效取决于网站同步速度，不是直接登录QQ接收消息。
+当前公开快照包含 H616 常驻转发、COS 加密 Cookie 更新、30 MB 文件转发与修复后的中文操作菜单。读取的是用户已获授权的网站聊天记录，时效取决于网站同步，并非直接登录 QQ 接收消息。
 
-这是已验证的本地采集转发和会话维护源码快照，Python 3.11+，核心仅依赖标准库。未包含尚在开发的云中转／加密包组件、实际配置或运行数据。原仓库B站与NapCat程序不受影响。
+## 功能
 
-## 已完成的能力
+- 三个示例 UID 可替换为自己的监听名单；SQLite 基线、去重、队列及失败退避。
+- 所有消息使用彩色标题卡片，包含时间、引用、回复与图片；不自动附加来源网址，保留原文网址。
+- 文件气泡支持原文件名转发，单文件最大 **30,000,000 字节**；按 64 KiB 分块写私密临时文件，再固定 Content-Length 流式上传。超限或失败保留队列。
+- CookieJar 持久化网站续期；失效通知及本地验证码登录恢复。新 Cookie 经密封盒加密、Ed25519 签名后通过 COS 中转，板端隔离验证后应用，并返回签名回执。
+- 固定对端身份、递增版本、防回放、重复包原回执及中断恢复。健康时约 15 分钟领取，登录失效后约每分钟检查，网络失败会退避。
+- H616 的采集发送与更新领取分别由开机守护管理，使用板端 Wi-Fi，不依赖电脑常开。
 
-- 逐UID请求消息接口，校验业务结果、日期、聊天范围和返回UID；无需先调用check_login。
-- 默认约15秒检查，total快照分页、重叠读取、周期全量对账和跨天补抓。
-- SQLite首次历史基线、站点/聊天范围/消息ID去重、事务入队、发送确认与失败退避；重启保留状态。
-- 解析HTML正文、@、引用作者和网页提供的引用内容。引用放灰底卡片，回复独立显示；引用/回复配图区分。QQ表情保留文字含义，头像不视为配图。
-- 带登录态下载固定来源图片，上传飞书取得image_key后同条展示；图片失败保留重试。
-- 站点专用CookieJar持久化Set-Cookie、期限及删除指令，重启读回；配置更新后运行中的新版监听自动重读。
-- 登录失效时保留游标并通过既有Webhook限频提醒；本地恢复网页支持人工填写图形验证码登录，或验证后导入cookies.txt。
+## 从哪里开始
 
-真实Cookie读取、UID筛选、分页、历史基线、飞书文字/引用/图片发送，以及Cookie响应更新与重启读回均已验证。完整密码登录、自然失效后恢复、长期稳定性与本项目正式H616迁移仍需用户环境验收，详见 [VALIDATION.md](VALIDATION.md)。
+Windows：Python 3.11+，双击 `00-menu.cmd`。菜单只负责日常操作；首次先运行 `01-settings.cmd` 设置网站 Cookie、UID、飞书 Webhook 和应用凭据。普通文件另需应用权限 `im:resource`、`im:message:send_as_bot`，应用发布并加群，配置 `feishu_chat_id`。
 
-## 本地运行
+详见 [日常操作](DAILY-USAGE.md)、[COS 配置](COS-SETUP.md)、[加密与配对](SECURE-PACKAGE.md)、[验收范围](VALIDATION.md)。公开版没有任何现成账号、云身份或设备配对。
 
-进入本目录；Windows也可使用数字编号CMD入口。示例UID均为占位值，必须填写自己的监听对象。凭据只填本机配置，不提交仓库。
+默认 Windows 私密目录为用户主目录下 `.yyscha-qq-feishu`，板端为 `/overlay/yyscha/data`；两端可用 `YYSCHA_PRIVATE_DIR` 指定。不要将私密目录放在源码仓库或公开交付目录。
 
-```powershell
-python settings.py
-python relay.py check
-python relay.py preview
-python relay.py once
-python relay.py test-send
-python relay.py run --send
-```
+COS 默认桶名为示例值，使用前在两端设置 `YYSCHA_COS_BUCKET` 和 `YYSCHA_COS_REGION`，并按实际账户修改 cloud 中权限模板；环境变量必须传递到常驻服务。`h616-home-01` 为示例设备标识。USB 状态入口自动选择唯一设备；多设备时设置 `YYSCHA_ADB_SERIAL`。
 
-`test-send` 会向配置的飞书群发送一条明确标注的模拟测试消息。首次 `once` 或 `run` 仅建立昨日和今日基线；以后 `once` 会采集新增入队。没有 `--send` 的 `run` 仅采集；之后启用发送会处理积累的待发送记录。停止运行按Ctrl+C。
+## H616 部署
 
-```powershell
-python relay.py status
-python relay.py session-status
-python history_test.py --day YYYY-MM-DD
-python history_test.py --day YYYY-MM-DD --replies-only --images-only --limit 2 --send
-python recovery_web.py --open-browser
-```
+`h616/install.sh` 从本目录安装，要求先停止本项目服务；不覆盖配置/数据库，不自动启用。`h616/install-boot.sh` 安装本项目两个开机守护项。首次安装需先备份、配对和配置，完成只读采集验收后再开启发送，保持只有一个正式发送端。
 
-历史测试仅在内存处理，不更改正式消息数据库；每次显式使用 `--send` 都可能再次发送样本。`preview` 为首个页面中的样本，不保证是当天最新消息。
+脚本复用既有 `/overlay/b-up-runtime/python/bin/python3`、certifi CA 和 `/var/run/b-up-time-ready` NTP 标记，**不是通用 Linux 一键安装器**。对其他板卡请先适配运行时及时间信任来源。
 
-Windows默认私密目录为用户主目录下 `.yyscha-qq-feishu`；板端默认为 `/overlay/yyscha/data`。可在启动前设置环境变量 `YYSCHA_PRIVATE_DIR`，也可用 `--config` 和 `--db` 指定路径。目录包含 `config.json`、消息数据库和 `site-session.sqlite3`，都不应提交。
+vendor 附带 libnacl 2.1.0、libsodium 1.0.22；二进制分别面向 Windows x86_64 和本项目 ARM32/glibc 2.23 用户态（H616 内核虽为 aarch64）。来源、构建参数、哈希及许可见 vendor/MANIFEST.json 与许可证，其他架构不能直接加载。
 
-配置字段见 [config.example.json](config.example.json)。Cookie可由本地Netscape cookies.txt导入；飞书Webhook负责发送，配图另需已发布应用的App ID/Secret和图片上传权限。不要把现有私密配置复制到仓库根目录。
-
-## 登录恢复与远程边界
-
-恢复网页只监听 `127.0.0.1:8766`，带随机路径并核验Host/Origin。通过网站正常CSRF和验证码流程登录；用户填写验证码，密码不保存。候选会话先隔离验证消息读取，成功才更新配置，不重置基线或队列。
-
-电脑启动的恢复网页只更新电脑；板端启动的恢复网页才更新板端。仅打开电脑页面不会把Cookie同步到家中设备。远程访问板端页面需要已建立的加密网络和同端口SSH转发；本快照未提供已部署的外网通道。
-
-现有群自定义Webhook用于通知，本快照未开通飞书反向接收，也未包含对象存储加密中转。Cookie服务器期限不代表无限续期，账号退出、会话撤销或验证码要求仍可能需要人工恢复。
-
-## 图片与可靠性限制
-
-图片仅从已验证的 `https://www.yyscha.cn/application/QQ/serve.php` 读取，携带站点Cookie，不跟随重定向或向其他域转发Cookie。验证文件类型及9MiB上限，默认每条最多6张。音频和视频仍以提示展示。
-
-引用内容可能由网页截断，不保证完整原文。未知或未附图片不会虚称下方有图。请求使用直接连接，不继承环境HTTP代理；需要代理的网络需另行适配。
-
-失败重试可能改变显示顺序；网络超时或远端发送成功后本地提交前崩溃可能重复通知。周期重叠读取不能证明网站历史插入永不遗漏；停止复查的旧日期可能需要人工对账。数据库长期容量策略仍需实际运行观察。
-
-## H616准备文件
-
-[h616/install.sh](h616/install.sh) 只复制本项目程序，不启用服务、不覆盖既有配置和消息数据库。复用现有 `/overlay/b-up-runtime/python/bin/python3`、可信CA文件和NTP标记 `/var/run/b-up-time-ready`；不是通用Linux一键安装器。需先检查32位ARM用户环境、Python3.11+的ssl/sqlite3、可信证书及目录权限。
+## 验证与边界
 
 ```sh
-sh h616/install.sh
-# 安全配置 /overlay/yyscha/data/config.json，开启 require_trusted_time
-sh /overlay/yyscha/app/yyschactl collect
-sh /overlay/yyscha/app/yyschactl status
-# 用户环境验收后明确启用正式发送
-sh /overlay/yyscha/app/yyschactl start
+python -m unittest discover -q
+python delivery_menu.py --check
 ```
 
-迁移需先停用旧发送进程，并用SQLite backup API生成一致性快照；不要复制正在写入的WAL数据库主文件来代替备份。保持一个正式发送者。H616脚本已准备，本项目尚未完成正式板端迁移和全天验证。
+测试使用合成数据、模拟接口和本机环回 HTTP 服务，不发送群消息。发布前在去标识公开快照重新运行测试；具体结果见 VALIDATION.md。
 
-## 测试与许可
+部署环境已验证真实 Cookie 加密中转、板端应用与回执，以及真实小文件飞书发送。30 MB 已验证板端本地 HTTP 流式传输，未向飞书实际发送 30 MB 文件。独立供电、完整断电启动、跨午夜和长期观察尚待验收。
 
-```sh
-python -m unittest discover -v
-```
+发送成功但本地确认前中断可能重复；稳定 UUID 与逐附件进度不能保证严格恰好一次。引用可能被网页截断。HTML/JSON 错误页、空附件会拒绝，图片继续使用独立的 9 MiB 限制；不存在无限 Cookie 续期保证。密钥自动轮换工具尚未交付，登录恢复需要正常人工认证。
 
-测试使用合成消息、模拟网络与临时数据库，不要求真实Cookie，不应发送飞书或连接真实网站。测试结束清理本目录 `.test-work` 中自己创建的目录。
-
-复用组件及Apache-2.0许可见 [NOTICE.md](NOTICE.md) 与 [LICENSE](LICENSE)。
+当前核心仅使用 Python 标准库；密码运算委托 libnacl/libsodium，不自行实现。许可与来源见 [NOTICE](NOTICE.md)、[LICENSE](LICENSE)。

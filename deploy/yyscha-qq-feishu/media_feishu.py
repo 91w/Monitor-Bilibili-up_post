@@ -20,15 +20,32 @@ def clipped(text, size):
     return raw[:size].decode('utf-8', errors='ignore') + ('\n[内容过长，已截断]' if len(raw) > size else '')
 
 
-def card_elements(body, parts, keyed_images, keyword=''):
+def card_header(parts):
+    import relay as r
+    # Style follows the monitored UID, so a nickname change cannot change color.
+    profiles = {r.UIDS[0]: ('blue', '🍑'), r.UIDS[1]: ('green', '⚡'), r.UIDS[2]: ('purple', '🟣')}
+    legacy = str(parts.get('header', '网页消息')).rpartition(' · ')
+    name = str(parts.get('sender_name') or legacy[0] or legacy[2])
+    stamp = str(parts.get('message_time') or (legacy[2] if legacy[1] else ''))
+    uid = parts.get('sender_uid')
+    if uid not in profiles:
+        uid = {'示例用户一': r.UIDS[0], '示例用户二': r.UIDS[1], '示例用户三': r.UIDS[2]}.get(name)
+    color, badge = profiles.get(uid, ('blue', '💬'))
+    result = {'template': color, 'title': {'tag': 'plain_text', 'content': badge + ' ' + clipped(name, 200)}}
+    if stamp:
+        result['subtitle'] = {'tag': 'plain_text', 'content': clipped(stamp, 200)}
+    return result
+
+
+def card_elements(body, parts, keyed_images, keyword='', include_header=True):
     def text(value, limit=10000):
         return {'tag': 'div', 'text': {'tag': 'plain_text', 'content': clipped(value, limit)}}
     def image(key, context):
         return {'tag': 'img', 'img_key': key, 'alt': {'tag': 'plain_text', 'content': '引用配图' if context == 'quote' else '回复配图'}, 'mode': 'fit_horizontal', 'preview': True}
     if not parts or not parts.get('header'):
         return [text((keyword + '\n' + body).strip(), 14000)] + [image(key, context) for key, context in keyed_images]
-    header = '\n'.join(x for x in [keyword, parts.get('test_label'), parts['header']] if x)
-    elements = [text(header, 1800)]
+    header = '\n'.join(x for x in [keyword, parts.get('test_label'), parts['header'] if include_header else ''] if x)
+    elements = [text(header, 1800)] if header else []
     quote = parts.get('quote')
     if quote:
         author = '引用 · ' + quote.get('author', '未知')
@@ -43,10 +60,8 @@ def card_elements(body, parts, keyed_images, keyword=''):
         elements.append({'tag': 'hr'})
     body_hint = '[配图见下方]' if any(context != 'quote' for _, context in keyed_images) else '[图片未附]'
     reply_text = re.sub(r'\[图片[^\]\n]*\]', body_hint, parts.get('body', ''))
-    elements.append(text(('回复\n' if quote else '') + reply_text, 10000))
+    elements.append(text(('回复\n\n' if quote else '') + reply_text, 10000))
     elements += [image(key, context) for key, context in keyed_images if context != 'quote' or not quote]
-    if parts.get('link'):
-        elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': '[查看原聊天](' + parts['link'] + ')'}})
     return elements
 
 
@@ -210,10 +225,13 @@ class ImageClient:
         for image in images[:cap]:
             key = self.upload(image['url'])
             keyed_images.append((key, image.get('context', 'body')))
-        elements = card_elements(body, parts, keyed_images, self.config.get('feishu_keyword', ''))
+        elements = card_elements(body, parts, keyed_images, self.config.get('feishu_keyword', ''), include_header=False)
         if len(images) > cap:
             elements.append({'tag': 'div', 'text': {'tag': 'plain_text', 'content': f'共有{len(images)}张图片，本条展示前{cap}张。'}})
-        payload = {'msg_type': 'interactive', 'card': {'config': {'wide_screen_mode': True}, 'elements': elements}}
+        card = {'config': {'wide_screen_mode': True}, 'elements': elements}
+        if parts and parts.get('header'):
+            card['header'] = card_header(parts)
+        payload = {'msg_type': 'interactive', 'card': card}
         r.ensure_time(self.config)
         if self.config.get('feishu_secret'):
             stamp = int(time.time())

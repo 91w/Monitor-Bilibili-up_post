@@ -96,10 +96,7 @@ def main():
             images = extract_images(item)
             parts = r.message_parts(item, day.isoformat())
             parts['test_label'] = f'【历史格式测试 {index}/{len(samples)}】 {day.isoformat()}'
-            if images or parts.get('quote'):
-                image_client.send(body, images, parts=parts)
-            else:
-                r.feishu(config, body)
+            image_client.send(body, images, parts=parts)
             print(f'已发送 {index}/{len(samples)}：{kind}；飞书code=0')
             time.sleep(1)
         else:
