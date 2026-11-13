@@ -63,6 +63,9 @@ watcher.post_to_feishu = guarded_post_to_feishu
 from reliable import install
 queue = install(watcher, BASE, ensure_time)
 
+from startup_notice import install_startup_notice
+startup_notifier = install_startup_notice(watcher, queue.db, ensure_time)
+
 if __name__ == "__main__":
     try:
         raise SystemExit(watcher.main())
