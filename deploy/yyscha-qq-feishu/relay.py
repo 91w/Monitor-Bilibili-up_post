@@ -27,6 +27,10 @@ class AuthRequired(Failure):
     pass
 
 
+class TimeNotReady(Failure):
+    pass
+
+
 class RateLimited(Failure):
     def __init__(self, retry_after=60):
         self.retry_after = retry_after
@@ -115,6 +119,11 @@ class Node:
             return '[图片' + (('：' + self.attrs['alt']) if self.attrs.get('alt') else '') + ']'
         if self.tag in ('video', 'audio'):
             return '[媒体]'
+        if self.has('voice-bubble'):
+            import re
+            text = ''.join(c.plain() if isinstance(c, Node) else c for c in self.children)
+            duration = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|秒)', text)
+            return '[语音' + ('：' + duration.group(1) + '秒' if duration else '') + '，音频另附]'
         if self.tag == 'br':
             return '\n'
         if self.tag == 'a' and (self.has('message-file') or self.has('file-bubble')):
@@ -180,14 +189,15 @@ def message_parts(item, day):
         quote_data = {'author': author.plain().strip() if author else '未知',
                       'time': when.plain().strip() if when else '',
                       'text': quote.plain().strip() if quote else '[引用展示不可用]'}
+        quote_data['target_id'] = reply.attrs.get('data-reply-to', '')
     return {'header': f"{item.get('name', item['uid'])} · {stamp}", 'quote': quote_data,
             'body': body, 'link': f'{SITE}/application/QQ/day.php?' + urlencode({'day': day}),
             'format_version': 2, 'sender_uid': item['uid'],
             'sender_name': item.get('name', item['uid']), 'message_time': stamp, 'files': files}
 
 
-def render(item, day):
-    message = message_parts(item, day)
+def render(item, day, parts=None):
+    message = message_parts(item, day) if parts is None else parts
     parts = [message['header']]
     quote = message['quote']
     if quote:
@@ -221,16 +231,26 @@ class Source:
             if data.get('code') in (401, 403) or any(word in hint for word in ('登录', 'login', 'session', '未授权')):
                 raise AuthRequired('网站登录已失效，请打开登录恢复入口；进度和队列已保留')
             raise Failure('消息业务失败：检查Cookie或登录状态')
-        if not isinstance(data.get('day'), dict) or data['day'].get('key') != day or not data['day'].get('chat_key'):
+        if not isinstance(data.get('day'), dict) or data['day'].get('key') != day:
             raise Failure('日期或聊天范围缺失/不符，停止推进游标')
         for key in ('offset', 'total'):
             if type(data.get(key)) is not int or data[key] < 0:
                 raise Failure('分页字段无效')
         if data['offset'] != offset:
             raise Failure('普通分页offset不符，停止推进游标')
+        data['_unpublished_empty_day'] = False
+        if not data['day'].get('chat_key'):
+            if data['total'] == 0 and data['items'] == [] and offset == 0 and data['day'].get('message_count') == 0:
+                data['_unpublished_empty_day'] = True
+                return data
+            raise Failure('聊天范围缺失，停止推进游标')
         for item in data['items']:
             if not isinstance(item, dict) or item.get('uid') != uid or not isinstance(item.get('id'), str) or not item['id']:
                 raise Failure('消息ID缺失或UID筛选不符')
+            if self.config.get('require_source_record', False):
+                import re
+                if not isinstance(item.get('record_id'), str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', item['record_id']):
+                    raise Failure('网站归档标识缺失或变化，暂停读取，避免未知身份重复发送')
         return data
 
 
@@ -245,12 +265,22 @@ def connect(path):
     CREATE TABLE IF NOT EXISTS messages(scope TEXT,id TEXT,day TEXT,uid TEXT,ts REAL,body TEXT,status TEXT,attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0,error TEXT,PRIMARY KEY(scope,id));
     ''')
     columns = {row[1] for row in db.execute('PRAGMA table_info(messages)')}
+    for name in ('observed_at', 'sent_at', 'logical_key', 'source_record', 'duplicate_of'):
+        if name not in columns:
+            kind = 'REAL' if name in ('observed_at', 'sent_at') else 'TEXT'
+            db.execute(f'ALTER TABLE messages ADD COLUMN {name} {kind}')
+            db.commit()
     if 'media_json' not in columns:
         db.execute("ALTER TABLE messages ADD COLUMN media_json TEXT NOT NULL DEFAULT '[]'")
         db.commit()
     if 'parts_json' not in columns:
         db.execute("ALTER TABLE messages ADD COLUMN parts_json TEXT NOT NULL DEFAULT '{}'")
         db.commit()
+    from message_identity import initialize
+    initialize(db)
+    if not db.execute('SELECT 1 FROM messages LIMIT 1').fetchone():
+        with db:
+            db.execute("INSERT OR IGNORE INTO meta VALUES('identity_guard_ready','1')")
     return db
 
 
@@ -258,33 +288,58 @@ def scan(db, source, day, uid, baseline=False, now=None):
     now = time.time() if now is None else now
     stream = db.execute('SELECT scope,total,scanned FROM streams WHERE day=? AND uid=?', (day, uid)).fetchone()
     head = source.page(day, uid, 0)
+    if head.get('_unpublished_empty_day'):
+        return 0  # New calendar day before the website publishes its first archive.
     scope = SITE + '/' + str(head['day']['chat_key'])
     if stream and stream[0] != scope:
         raise Failure('聊天范围变化，停止读取')
     full = not stream or now - stream[2] >= 3600 or head['total'] < stream[1]
     start = 0 if full else max(0, min(stream[1], head['total']) - 60)
-    offset, items, pages = start, [], 0
     target = head['total']  # 固定本轮快照边界；轮询期间新增留到下一轮，避免追赶无限流。
-    while offset < target:
-        page = head if offset == 0 else source.page(day, uid, offset)
-        if SITE + '/' + str(page['day']['chat_key']) != scope or page['total'] < target:
-            raise Failure('扫描中聊天或总数变化，请重试')
-        batch = page['items']
-        if not batch:
-            raise Failure('分页提前为空，保留原游标等待重试')
-        items.extend(batch[:target - offset])
-        offset += len(batch)
-        pages += 1
-        if pages > 10000:
-            raise Failure('分页过多，保留原游标')
+    def read_pages(offset):
+        result, pages = [], 0
+        while offset < target:
+            page = head if offset == 0 else source.page(day, uid, offset)
+            if SITE + '/' + str(page['day']['chat_key']) != scope or page['total'] < target:
+                raise Failure('扫描中聊天或总数变化，请重试')
+            batch = page['items']
+            if not batch:
+                raise Failure('分页提前为空，保留原游标等待重试')
+            result.extend(batch[:target - offset])
+            offset += len(batch)
+            pages += 1
+            if pages > 10000:
+                raise Failure('分页过多，保留原游标')
+        return result
+    items = read_pages(start)
+    from message_identity import describe_all, needs_full_snapshot, register
+    if start > 0 and needs_full_snapshot(db, scope, items, day):
+        items = read_pages(0)
+        start = 0
+    identities = {value['id']: value for value in describe_all(items, day)}
     # 只有所有页成功后，基线/队列/游标一起提交。
     from media_feishu import extract_images
     with db:
         for item in items:
+            logical_key, owner_id, ambiguous = register(db, scope, identities[item['id']], complete=start == 0)
             media = json.dumps([] if baseline else extract_images(item), ensure_ascii=False)
-            structured = json.dumps({} if baseline else message_parts(item, day), ensure_ascii=False)
-            db.execute('INSERT OR IGNORE INTO messages(scope,id,day,uid,ts,body,status,media_json,parts_json) VALUES(?,?,?,?,?,?,?,?,?)',
-                       (scope, item['id'], day, uid, float(item.get('ts') or 0), '' if baseline else render(item, day), 'baseline' if baseline else 'pending', media, structured))
+            parts = {} if baseline else message_parts(item, day)
+            quote = parts.get('quote')
+            if quote and quote.get('text') == '原消息':
+                original = db.execute('SELECT parts_json FROM messages WHERE scope=? AND id=?', (scope, quote.get('target_id'))).fetchone()
+                cached = json.loads(original[0]) if original else {}
+                quote['text'] = cached.get('body') or '[引用正文暂不可用：网站仅提供了占位文字]'
+                if cached.get('body'):
+                    quote['time'] = cached.get('message_time') or quote['time']
+                    quote['resolved_from_cache'] = True
+            structured = json.dumps(parts, ensure_ascii=False)
+            status = 'duplicate' if owner_id != item['id'] else 'baseline' if baseline else 'quarantined' if ambiguous else 'pending'
+            db.execute('INSERT OR IGNORE INTO messages(scope,id,day,uid,ts,body,status,media_json,parts_json,observed_at,logical_key,source_record,duplicate_of) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (scope, item['id'], day, uid, float(item.get('ts') or 0), '' if baseline else render(item, day, parts), status, media, structured, None if baseline else now, logical_key, identities[item['id']]['record_id'], owner_id if owner_id != item['id'] else None))
+            if owner_id != item['id']:
+                db.execute("UPDATE messages SET status='duplicate',duplicate_of=?,error='跨归档重复ID，已隔离' WHERE scope=? AND id=? AND status IN ('pending','retry')", (owner_id,scope,item['id']))
+            if ambiguous and not baseline:
+                db.execute("UPDATE messages SET error='跨归档同人同刻相似消息，媒体或引用变化，暂停等待核对' WHERE scope=? AND id=? AND status='quarantined'", (scope,item['id']))
             if not baseline:
                 db.execute("UPDATE messages SET media_json=?,parts_json=? WHERE scope=? AND id=? AND status IN ('pending','retry')", (media, structured, scope, item['id']))
         db.execute('INSERT OR REPLACE INTO streams VALUES(?,?,?,?,?)', (day, uid, scope, target, now if full else stream[2]))
@@ -297,7 +352,7 @@ def ensure_time(config):
         try:
             require_trusted_time()
         except (TimeTrustError, AttributeError):
-            raise Failure('等待H616现有NTP可信时间记录，暂缓读取和发送') from None
+            raise TimeNotReady('等待H616现有NTP可信时间记录，暂缓读取和发送') from None
 
 
 def poll(db, source, config, now=None):
@@ -351,6 +406,12 @@ def drain(db, config, sender=feishu, now=None, image_client=None):
     now = time.time() if now is None else now
     rows = db.execute("SELECT scope,id,body,attempts,media_json,day,uid,parts_json FROM messages WHERE status IN ('pending','retry') AND next_try<=? ORDER BY ts,id LIMIT 10", (now,)).fetchall()
     for scope, mid, body, attempts, media_json, day, uid, parts_json in rows:
+        from message_identity import owner_for
+        owner_id = owner_for(db, scope, mid)
+        if owner_id != mid:
+            with db:
+                db.execute("UPDATE messages SET status='duplicate',duplicate_of=?,error='跨归档重复ID，已隔离' WHERE scope=? AND id=?", (owner_id,scope,mid))
+            continue
         try:
             media = json.loads(media_json)
             parts = json.loads(parts_json)
@@ -387,6 +448,9 @@ def drain(db, config, sender=feishu, now=None, image_client=None):
                 for attachment in files:
                     file_client.send(scope, mid, attachment)
         except Failure as exc:
+            if isinstance(exc, TimeNotReady):
+                logging.error('%s；队列不增加失败次数，等待校时恢复', exc)
+                break
             with db:
                 db.execute("UPDATE messages SET status='retry',attempts=?,next_try=?,error=? WHERE scope=? AND id=?", (attempts + 1, now + min(3600, 15 * 2 ** min(attempts, 8)), str(exc), scope, mid))
                 if isinstance(exc, RateLimited):
@@ -396,7 +460,7 @@ def drain(db, config, sender=feishu, now=None, image_client=None):
                 break
         else:
             with db:
-                db.execute("UPDATE messages SET status='sent',error=NULL WHERE scope=? AND id=?", (scope, mid))
+                db.execute("UPDATE messages SET status='sent',error=NULL,sent_at=? WHERE scope=? AND id=?", (time.time(), scope, mid))
         time.sleep(1)  # 避免突发队列连续请求机器人。
 
 
@@ -440,6 +504,8 @@ def main():
         db = connect(args.db)
         print(dict(db.execute('SELECT status,count(*) FROM messages GROUP BY status')))
         print('等待重试：', db.execute("SELECT count(*) FROM messages WHERE status='retry'").fetchone()[0])
+        print('隔离待核对：', db.execute("SELECT count(*) FROM messages WHERE status='quarantined'").fetchone()[0])
+        print('已拦截重复：', db.execute("SELECT count(*) FROM messages WHERE status='duplicate'").fetchone()[0])
         notification_status = db.execute("SELECT value FROM meta WHERE key='notification_poll_status'").fetchone()
         if notification_status:
             status = json.loads(notification_status[0])
@@ -475,10 +541,13 @@ def main():
     if args.send and not config.get('feishu_webhook'):
         raise Failure('发送前请配置飞书Webhook')
     db = connect(args.db)
+    if not db.execute("SELECT 1 FROM meta WHERE key='identity_guard_ready' AND value='1'").fetchone():
+        raise Failure('历史消息身份迁移未完成，保持暂停；请先完成去重核对，不能重建数据库绕过')
     from media_feishu import ImageClient
     image_client = ImageClient(config, db) if args.send else None
     from notification_polling import NotificationPolling
     notification = NotificationPolling() if config.get('notification_polling', False) and args.command == 'run' else None
+    ready_notice_pending = bool(args.send and config.get('startup_notifications', False) and args.command == 'run')
     # 整个生命周期占用独占锁，避免两个进程同时发送同一队列。
     lock = sqlite3.connect(str(args.db) + '.lock', timeout=0)
     lock.execute('CREATE TABLE IF NOT EXISTS guard(id INTEGER)')
@@ -502,10 +571,22 @@ def main():
                     poll(db, source, config)
                     checked = True
                 if not checked:
+                    if ready_notice_pending and notification.allow_delivery:
+                        from service_notifications import notify_ready
+                        try:
+                            ready_notice_pending = not notify_ready(db, config)
+                        except Failure:
+                            logging.error('服务启动提醒暂未发送成功，稍后重试')
                     if args.send and notification.allow_delivery:
                         drain(db, config, image_client=image_client)
-                    time.sleep(max(0, min(15, config.get('interval_seconds', 15)) - (time.monotonic() - started)))
+                    time.sleep(max(1, min(15, notification.next_probe - time.time())))
                     continue
+                if ready_notice_pending:
+                    from service_notifications import notify_ready
+                    try:
+                        ready_notice_pending = not notify_ready(db, config)
+                    except Failure:
+                        logging.error('服务启动提醒暂未发送成功，稍后重试')
                 prior_auth = db.execute("SELECT value FROM meta WHERE key='auth_required'").fetchone()
                 with db:
                     db.execute("INSERT OR REPLACE INTO meta VALUES('auth_required','0')")
@@ -546,7 +627,10 @@ def main():
                 if failed:
                     raise Failure('本轮读取失败，未完成全部扫描')
                 break
-            time.sleep(max(0, config.get('interval_seconds', 15) - (time.monotonic() - started)))
+            if notification:
+                time.sleep(max(1, min(15, notification.next_probe - time.time())))
+            else:
+                time.sleep(max(0, config.get('interval_seconds', 15) - (time.monotonic() - started)))
     finally:
         lock.close()
         db.close()

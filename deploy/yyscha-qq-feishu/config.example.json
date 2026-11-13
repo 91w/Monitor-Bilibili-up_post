@@ -10,6 +10,8 @@
   "feishu_keyword": "",
   "interval_seconds": 15,
   "notification_polling": true,
+  "startup_notifications": true,
+  "require_source_record": true,
   "previous_day_minutes": 10,
   "require_trusted_time": false
 }

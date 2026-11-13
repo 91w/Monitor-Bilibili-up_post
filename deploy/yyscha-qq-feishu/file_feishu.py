@@ -7,6 +7,7 @@ import re
 import tempfile
 import time
 import uuid
+import wave
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import HTTPError, URLError
@@ -59,6 +60,15 @@ def extract_files(item):
         if node.tag in ('script', 'style', 'iframe'):
             return
         quoted = quoted or node.has('reply-content')
+        if node.has('voice-bubble'):
+            audio = image_url(node.attrs.get('data-src'))
+            path = parse_qs(urlparse(audio or '').query).get('path', [''])[0]
+            if audio and path.startswith('resources/audios/') and path not in seen:
+                seen.add(path)
+                duration = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|秒)', node.plain())
+                files.append({'url': audio, 'name': '语音.wav', 'kind': 'audio',
+                              'duration_seconds': float(duration.group(1)) if duration else None,
+                              'context': 'quote' if quoted else 'body'})
         url = image_url(node.attrs.get('href')) if node.tag == 'a' else None
         if url and (node.has('message-file') or node.has('file-bubble')):
             path = parse_qs(urlparse(url).query).get('path', [''])[0]
@@ -126,7 +136,8 @@ class FileClient:
         from site_session import get_session
         url = image_url(attachment.get('url'))
         path = parse_qs(urlparse(url or '').query).get('path', [''])[0]
-        if not url or not path.startswith('resources/files/'):
+        allowed_prefix = 'resources/audios/' if attachment.get('kind') == 'audio' else 'resources/files/'
+        if not url or not path.startswith(allowed_prefix):
             raise r.Failure('附件地址不属于已验证的yyscha文件接口')
         r.ensure_time(self.config)
         try:
@@ -180,6 +191,18 @@ class FileClient:
             return row[0]
         self.auth.access_token()
         with self.download(attachment) as file:
+            if attachment.get('kind') == 'audio':
+                first = file.read(64)
+                file.seek(0)
+                if first[:4] != b'RIFF' or first[8:12] != b'WAVE':
+                    raise r.Failure('语音返回的格式暂未支持，保留队列；不按错误扩展名发送')
+                try:
+                    with wave.open(file, 'rb') as audio:
+                        duration = audio.getnframes() / audio.getframerate()
+                    file.seek(0)
+                except (wave.Error, EOFError, ZeroDivisionError):
+                    raise r.Failure('语音WAV格式无效，保留队列等待处理') from None
+                name = f'语音-{duration:g}秒.wav'
             return self._upload_stream(file, name, cache)
 
     def _upload_stream(self, file, name, cache):

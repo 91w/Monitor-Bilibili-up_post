@@ -48,6 +48,32 @@ def delay_seconds(schedule, now):
     return max(120, number(schedule, 'off_hours_sec', 240, 1, 86400))
 
 
+def next_delay_seconds(schedule, now):
+    delay = delay_seconds(schedule, now)
+    schedule = schedule if isinstance(schedule, dict) else {}
+    local = now.astimezone(r.TZ)
+    if local.weekday() >= 5:
+        return delay
+    try:
+        start_h, start_m = map(int, schedule.get('start', '09:00').split(':'))
+        end_h, end_m = map(int, schedule.get('end', '16:30').split(':'))
+        if not (0 <= start_h < 24 and 0 <= end_h < 24 and 0 <= start_m < 60 and 0 <= end_m < 60):
+            return delay
+    except (ValueError, TypeError, AttributeError):
+        return delay
+    start, end = start_h * 60 + start_m, end_h * 60 + end_m
+    interval = number(schedule, 'interval_minutes', 10, 1, 1440)
+    grace = number(schedule, 'collect_grace_minutes', 1.5, 0, 60)
+    current = local.hour * 3600 + local.minute * 60 + local.second + local.microsecond / 1e6
+    for index in range(max(0, int((end - start) / interval) + 1)):
+        boundary = (start + index * interval + grace) * 60
+        remaining = boundary - current
+        if remaining > 0:
+            # Never sleep through a dense-window opening; keep a 15s minimum.
+            return min(delay, max(15, remaining))
+    return delay
+
+
 class ServicesDisabled(r.Failure):
     pass
 
@@ -103,6 +129,7 @@ class NotificationPolling:
         backoff = db.execute("SELECT value FROM meta WHERE key='site_backoff_until'").fetchone()
         if backoff and float(backoff[0]) > now:
             self.allow_delivery = False
+            self.next_probe = float(backoff[0])
             return False
         context = hashlib.sha256(json.dumps([config.get('site_cookie'), config['uids']], sort_keys=True).encode()).hexdigest()
         context_changed = self.context is not None and self.context != context
@@ -120,7 +147,7 @@ class NotificationPolling:
         outcome, delay = 'error', 60
         try:
             candidate = (probe_fn or probe)(config, str(state.get('fp', '')))
-            delay = delay_seconds(candidate['schedule'], local)
+            delay = next_delay_seconds(candidate['schedule'], local)
             auth = db.execute("SELECT value FROM meta WHERE key='auth_required'").fetchone()
             must_read = (self.first or self.read_pending or state.get('day') != local.date().isoformat()
                          or now - float(state.get('scanned_at', 0)) >= 3600
@@ -140,6 +167,9 @@ class NotificationPolling:
             return bool(must_read)
         except ServicesDisabled:
             outcome, delay = 'services_disabled', 1800
+            raise
+        except r.TimeNotReady:
+            outcome, delay = 'waiting_for_time', 15
             raise
         except r.RateLimited as exc:
             outcome, delay = 'rate_limited', exc.retry_after

@@ -109,6 +109,8 @@ class MediaTest(unittest.TestCase):
             self.assertEqual(refresh_if_expired(self.config, '2026-11-11', r.UIDS[0], 'msg-one', stale)[0]['url'], URL)
 
     def test_media_failure_keeps_durable_retry(self):
+        from message_identity import initialize
+        initialize(self.db)
         self.db.executescript('CREATE TABLE messages(scope TEXT,id TEXT,body TEXT,attempts INTEGER,media_json TEXT,day TEXT,uid TEXT,status TEXT,next_try REAL,error TEXT)')
         self.db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)', ('scope','id','body',0,json.dumps([{'url':URL}]),'2026-11-11','u_one','pending',0,None))
         self.db.execute('ALTER TABLE messages ADD COLUMN ts REAL DEFAULT 0')
